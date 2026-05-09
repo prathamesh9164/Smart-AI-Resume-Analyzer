@@ -4,7 +4,12 @@ from datetime import datetime
 
 class ResumeAnalyzer:
     def __init__(self):
-        self.nlp = spacy.load("en_core_web_sm")
+        try:
+            self.nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            import spacy.cli
+            spacy.cli.download("en_core_web_sm")
+            self.nlp = spacy.load("en_core_web_sm")
         
     def analyze_resume(self, resume_text):
         """Analyze resume text and return metrics"""
