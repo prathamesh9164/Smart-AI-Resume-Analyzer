@@ -4,9 +4,9 @@ Smart Resume Analyzer uses advanced AI models to provide detailed analysis and f
 
 ## Available AI Models
 
-### 1. Google Gemini
+### 1. Groq
 
-Google Gemini is a powerful AI model developed by Google that offers state-of-the-art natural language processing capabilities. In Smart Resume Analyzer, Gemini is used to:
+Groq is a powerful AI model provider that offers fast, OpenAI-compatible language model inference. In Smart Resume Analyzer, Groq is used to:
 
 - Analyze resume content and structure
 - Identify key skills and missing skills for target roles
@@ -18,7 +18,7 @@ Google Gemini is a powerful AI model developed by Google that offers state-of-th
 When you upload your resume for AI analysis, the following process occurs:
 
 1. **Text Extraction**: The system extracts text from your PDF or DOCX resume
-2. **AI Processing**: The selected AI model (Gemini or Claude) analyzes the resume text
+2. **AI Processing**: Groq analyzes the resume text
 3. **Structured Analysis**: The AI generates a structured analysis including:
    - Overall assessment
    - Skills analysis (current and missing skills)
@@ -33,10 +33,10 @@ To use these AI models, you need to set up API keys in your `.env` file:
 
 ```
 # API Keys for AI Models
-GOOGLE_API_KEY=your_google_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
-- For Google Gemini, you need a Google API key from [Google AI Studio](https://makersuite.google.com/)
+- For Groq, you need an API key from [Groq Console](https://console.groq.com)
 
 ## Privacy and Data Handling
 

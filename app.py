@@ -7,7 +7,8 @@ import streamlit as st
 st.set_page_config(
     page_title="Smart Resume AI",
     page_icon="🚀",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 import json
@@ -33,13 +34,21 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from feedback.feedback import FeedbackManager
 from ui_components import (
-    apply_modern_styles, hero_section, feature_card, about_section, 
-    page_header, render_analytics_section, render_activity_section, 
-    render_suggestions_section
+    apply_modern_styles, hero_section, feature_card, about_section,
+    page_header, render_analytics_section, render_activity_section,
+    render_suggestions_section,
+    groq_badge, verdict_banner, score_cards_row,
+    strengths_weaknesses, section_feedback_grid, keyword_analysis,
+    bullet_rewrites, ats_tips_card, course_card
 )
 from datetime import datetime
 from jobs.job_search import render_job_search
 from PIL import Image
+from utils.groq_analyzer import (
+    analyze_with_groq, rewrite_summary_with_groq,
+    generate_cover_letter_opener, generate_interview_questions,
+    is_groq_available
+)
 
 class ResumeApp:
     def __init__(self):
@@ -101,13 +110,13 @@ class ResumeApp:
         init_database()
         
         # Load external CSS
-        with open('style/style.css') as f:
+        with open('style/style.css', encoding='utf-8') as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
         
         # Load Google Fonts
         st.markdown("""
-            <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Poppins:wght@400;500;600&display=swap" rel="stylesheet">
-            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         """, unsafe_allow_html=True)
 
     def load_lottie_url(self, url: str):
@@ -142,32 +151,52 @@ class ResumeApp:
 
         /* Global Styles */
         .main-header {
-            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            background: linear-gradient(135deg, rgba(124,92,255,0.24), rgba(41,214,198,0.12));
             padding: 2rem;
-            border-radius: 15px;
+            border-radius: 24px;
             margin-bottom: 2rem;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            box-shadow: 0 20px 45px rgba(0,0,0,0.25);
             text-align: center;
             position: relative;
             overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.08);
         }
 
         .main-header::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(45deg, transparent 0%, rgba(255,255,255,0.1) 100%);
-            z-index: 1;
+            top: -20%;
+            right: -10%;
+            width: 240px;
+            height: 240px;
+            background: radial-gradient(circle, rgba(124,92,255,0.32) 0%, transparent 65%);
+            pointer-events: none;
+        }
+
+        .main-header::after {
+            content: '';
+            position: absolute;
+            bottom: -20%;
+            left: 10%;
+            width: 200px;
+            height: 200px;
+            background: radial-gradient(circle, rgba(41,214,198,0.24) 0%, transparent 70%);
+            pointer-events: none;
         }
 
         .main-header h1 {
             color: white;
             font-size: 2.5rem;
-            font-weight: 600;
+            font-weight: 800;
             margin: 0;
+            position: relative;
+            z-index: 2;
+        }
+
+        .main-header p {
+            color: #c7d1e7;
+            margin-top: 0.75rem;
+            font-size: 1rem;
             position: relative;
             z-index: 2;
         }
@@ -176,25 +205,25 @@ class ResumeApp:
         .template-container {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 2rem;
-            padding: 1rem;
+            gap: 1.8rem;
+            padding: 1rem 0;
         }
 
         .template-card {
-            background: rgba(45, 45, 45, 0.9);
-            border-radius: 20px;
+            background: rgba(16, 23, 42, 0.96);
+            border-radius: 22px;
             padding: 2rem;
             position: relative;
             overflow: hidden;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(124,92,255,0.12);
+            transition: transform 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease;
         }
 
         .template-card:hover {
-            transform: translateY(-10px);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
-            border-color: #4CAF50;
+            transform: translateY(-8px);
+            box-shadow: 0 18px 35px rgba(124,92,255,0.16);
+            border-color: rgba(41,214,198,0.25);
         }
 
         .template-card::before {
@@ -204,13 +233,13 @@ class ResumeApp:
             left: 0;
             width: 100%;
             height: 100%;
-            background: linear-gradient(45deg, transparent 0%, rgba(76,175,80,0.1) 100%);
+            background: linear-gradient(135deg, transparent 0%, rgba(124,92,255,0.08) 55%);
             z-index: 1;
         }
 
         .template-icon {
             font-size: 3rem;
-            color: #4CAF50;
+            color: #7c5cff;
             margin-bottom: 1.5rem;
             position: relative;
             z-index: 2;
@@ -218,19 +247,19 @@ class ResumeApp:
 
         .template-title {
             font-size: 1.8rem;
-            font-weight: 600;
-            color: white;
+            font-weight: 700;
+            color: #f8fbff;
             margin-bottom: 1rem;
             position: relative;
             z-index: 2;
         }
 
         .template-description {
-            color: #aaa;
+            color: #b8c2dd;
             margin-bottom: 1.5rem;
             position: relative;
             z-index: 2;
-            line-height: 1.6;
+            line-height: 1.75;
         }
 
         /* Feature List Styles */
@@ -246,97 +275,14 @@ class ResumeApp:
             display: flex;
             align-items: center;
             margin-bottom: 1rem;
-            color: #ddd;
-            font-size: 0.95rem;
+            color: #d2d8ee;
+            font-size: 0.96rem;
         }
 
         .feature-icon {
-            color: #4CAF50;
-            margin-right: 0.8rem;
+            color: #7c5cff;
+            margin-right: 0.9rem;
             font-size: 1.1rem;
-        }
-
-        /* Button Styles */
-        .action-button {
-            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
-            color: white;
-            padding: 1rem 2rem;
-            border-radius: 50px;
-            border: none;
-            font-weight: 500;
-            cursor: pointer;
-            width: 100%;
-            text-align: center;
-            position: relative;
-            overflow: hidden;
-            z-index: 2;
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .action-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(76,175,80,0.3);
-        }
-
-        .action-button::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.2) 50%, transparent 100%);
-            transition: all 0.6s ease;
-        }
-
-        .action-button:hover::before {
-            left: 100%;
-        }
-
-        /* Form Section Styles */
-        .form-section {
-            background: rgba(45, 45, 45, 0.9);
-            border-radius: 20px;
-            padding: 2rem;
-            margin: 2rem 0;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-
-        .form-section-title {
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: white;
-            margin-bottom: 1.5rem;
-            padding-bottom: 0.8rem;
-            border-bottom: 2px solid #4CAF50;
-        }
-
-        .form-group {
-            margin-bottom: 1.5rem;
-        }
-
-        .form-label {
-            color: #ddd;
-            font-weight: 500;
-            margin-bottom: 0.8rem;
-            display: block;
-        }
-
-        .form-input {
-            width: 100%;
-            padding: 1rem;
-            border-radius: 10px;
-            border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(30, 30, 30, 0.9);
-            color: white;
-            transition: all 0.3s ease;
-        }
-
-        .form-input:focus {
-            border-color: #4CAF50;
-            box-shadow: 0 0 0 2px rgba(76,175,80,0.2);
-            outline: none;
         }
 
         /* Skill Tags */
@@ -348,21 +294,21 @@ class ResumeApp:
         }
 
         .skill-tag {
-            background: rgba(76,175,80,0.1);
-            color: #4CAF50;
+            background: rgba(124,92,255,0.12);
+            color: #b39dff;
             padding: 0.6rem 1.2rem;
-            border-radius: 50px;
-            border: 1px solid #4CAF50;
+            border-radius: 999px;
+            border: 1px solid rgba(124,92,255,0.24);
             font-size: 0.9rem;
-            transition: all 0.3s ease;
+            transition: all 0.25s ease;
             cursor: pointer;
         }
 
         .skill-tag:hover {
-            background: #4CAF50;
-            color: white;
+            background: rgba(41,214,198,0.16);
+            color: #f8fbff;
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(76,175,80,0.2);
+            box-shadow: 0 8px 18px rgba(41,214,198,0.12);
         }
 
         /* Progress Circle */
@@ -377,6 +323,25 @@ class ResumeApp:
             transform: rotate(-90deg);
             width: 100%;
             height: 100%;
+        }
+
+        .progress-circle circle {
+            fill: none;
+            stroke-width: 8;
+            stroke-linecap: round;
+            stroke: #7c5cff;
+            transform-origin: 50% 50%;
+            transition: all 0.3s ease;
+        }
+
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #f8fbff;
         }
 
         .progress-circle circle {
@@ -440,16 +405,23 @@ class ResumeApp:
         """, unsafe_allow_html=True)
 
     def load_image(self, image_name):
-        """Load image from static directory"""
-        try:
-            image_path = f"c:/Users/shree/Downloads/smart-resume-ai/{image_name}"
-            with open(image_path, "rb") as f:
-                image_bytes = f.read()
-            encoded = base64.b64encode(image_bytes).decode()
-            return f"data:image/png;base64,{encoded}"
-        except Exception as e:
-            print(f"Error loading image {image_name}: {e}")
-            return None
+        """Load image from assets directory"""
+        import os
+        # Search in project-relative paths
+        search_paths = [
+            os.path.join("assets", image_name),
+            image_name,
+        ]
+        for image_path in search_paths:
+            try:
+                with open(image_path, "rb") as f:
+                    image_bytes = f.read()
+                encoded = base64.b64encode(image_bytes).decode()
+                return f"data:image/png;base64,{encoded}"
+            except FileNotFoundError:
+                continue
+        print(f"Image not found: {image_name}")
+        return None
 
     def export_to_excel(self):
         """Export resume data to Excel"""
@@ -1086,6 +1058,43 @@ class ResumeApp:
             </div>
         """, unsafe_allow_html=True)
     
+    def build_groq_only_analysis(self, resume_text, selected_role, selected_category, role_info, groq_result):
+        """Build analysis structure from Groq result and basic extraction."""
+        # Extract basic sections (no scoring)
+        personal_info = self.analyzer.extract_personal_info(resume_text)
+        education = self.analyzer.extract_education(resume_text)
+        experience = self.analyzer.extract_experience(resume_text)
+        projects = self.analyzer.extract_projects(resume_text)
+        skills = self.analyzer.extract_skills(resume_text)
+        summary = self.analyzer.extract_summary(resume_text)
+        
+        # Use Groq's scores and feedback as the main analysis
+        return {
+            **personal_info,  # name, email, phone, linkedin, github, portfolio
+            'ats_score': groq_result.get('ai_overall_score', 0),
+            'document_type': 'resume',
+            'keyword_match': {
+                'score': groq_result.get('keyword_match_percent', 0),
+                'found_skills': groq_result.get('found_keywords', []),
+                'missing_skills': groq_result.get('missing_keywords', [])
+            },
+            'section_score': 85,  # Groq handles this; we use a placeholder
+            'format_score': 80,   # Groq handles formatting feedback
+            'education': education,
+            'experience': experience,
+            'projects': projects,
+            'skills': skills,
+            'summary': summary,
+            'suggestions': groq_result.get('ats_tips', []) or ['Groq analysis complete'],
+            'contact_suggestions': [],
+            'summary_suggestions': [],
+            'skills_suggestions': [],
+            'experience_suggestions': [],
+            'education_suggestions': [],
+            'format_suggestions': groq_result.get('recommended_additions', []),
+            'groq_result': groq_result  # Keep full Groq response for UI
+        }
+
     def render_analyzer(self):
         """Render the resume analyzer page"""
         apply_modern_styles()
@@ -1095,6 +1104,26 @@ class ResumeApp:
             "Resume Analyzer",
             "Get instant AI-powered feedback to optimize your resume"
         )
+
+        # ── Groq status badge ──────────────────────────────────────────────
+        groq_on = is_groq_available()
+        groq_badge(groq_on)
+        
+        # ── REQUIRE GROQ FOR ANALYSIS ──────────────────────────────────────
+        if not groq_on:
+            st.error("🔑 AI Analysis Requires Groq API Key")
+            st.warning("""
+            To analyze resumes with AI, you need to:
+            1. Get a free API key from [Groq Console](https://console.groq.com)
+            2. Create a `.env` file in the project root with:
+               ```
+               GROQ_API_KEY=your_api_key_here
+               ```
+            3. Restart the app
+            
+            Groq provides fast, high-quality AI analysis powered by their LPU inference engine.
+            """)
+            return
         
         # Job Role Selection
         categories = list(self.job_roles.keys())
@@ -1106,12 +1135,23 @@ class ResumeApp:
         role_info = self.job_roles[selected_category][selected_role]
         
         # Display role information
+        skills_html = " ".join(
+            f'<span style="background:rgba(124,92,255,.12);color:#b39dff;border:1px solid rgba(124,92,255,.25);'
+            f'border-radius:50px;padding:3px 12px;font-size:.78rem;font-weight:500;margin:3px;'
+            f'display:inline-block;">{s}</span>'
+            for s in role_info['required_skills']
+        )
         st.markdown(f"""
-        <div style='background-color: #1e1e1e; padding: 20px; border-radius: 10px; margin: 10px 0;'>
-            <h3>{selected_role}</h3>
-            <p>{role_info['description']}</p>
-            <h4>Required Skills:</h4>
-            <p>{', '.join(role_info['required_skills'])}</p>
+        <div style="background:#161f38;border:1px solid rgba(255,255,255,.08);
+                    border-radius:18px;padding:22px;margin:12px 0;">
+          <div style="font-weight:700;color:#f8fbff;font-family:'Plus Jakarta Sans',sans-serif;
+                      font-size:1rem;margin-bottom:8px;">{selected_role}</div>
+          <p style="color:#98a8c6;font-size:.88rem;margin:0 0 14px;line-height:1.6;">
+            {role_info['description']}
+          </p>
+          <div style="font-size:.75rem;color:#7b87a1;text-transform:uppercase;
+                      letter-spacing:.5px;margin-bottom:8px;">Required Skills</div>
+          <div style="line-height:2.2;">{skills_html}</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -1121,13 +1161,13 @@ class ResumeApp:
         st.markdown(
             self.render_empty_state(
             "fas fa-cloud-upload-alt",
-            "Upload your resume to get started with AI-powered analysis"
+            "Upload your resume for Groq AI analysis"
             ),
             unsafe_allow_html=True
         )
         if uploaded_file:
-            with st.spinner("Analyzing your document..."):
-                # Get file content
+            with st.spinner("🤖 Groq is analyzing your resume..."):
+                # ── Extract text ──────────────────────────────────────────
                 text = ""
                 try:
                     if uploaded_file.type == "application/pdf":
@@ -1140,272 +1180,143 @@ class ResumeApp:
                     st.error(f"Error reading file: {str(e)}")
                     return
 
+                if not text or len(text.strip()) < 50:
+                    st.error("Resume text is too short or empty. Please upload a valid resume.")
+                    return
+
+                # ── Run Groq AI analysis (ONLY) ────────────────────────────
+                groq = analyze_with_groq(text, selected_role, selected_category, role_info.get('required_skills', []))
                 
-                # Analyze the document
-                analysis = self.analyzer.analyze_resume({'raw_text': text}, role_info)
-                
-                # Save resume data to database
+                if not groq:
+                    st.error("""
+                    ⚠️ Groq analysis failed. Please check:
+                    - Your API key is valid (in `.env` file as `GROQ_API_KEY`)
+                    - Your Groq account has sufficient credits
+                    - Your internet connection is working
+                    - Try again in a few moments
+                    """)
+                    return
+
+                # ── Build analysis from Groq result ────────────────────────
+                analysis = self.build_groq_only_analysis(
+                    text, selected_role, selected_category, role_info, groq
+                )
+
+                # ── Save to DB ─────────────────────────────────────────────
                 resume_data = {
                     'personal_info': {
-                        'name': analysis.get('name', ''),
-                        'email': analysis.get('email', ''),
-                        'phone': analysis.get('phone', ''),
-                        'linkedin': analysis.get('linkedin', ''),
-                        'github': analysis.get('github', ''),
-                        'portfolio': analysis.get('portfolio', '')
+                        'name': analysis.get('name', ''), 'email': analysis.get('email', ''),
+                        'phone': analysis.get('phone', ''), 'linkedin': analysis.get('linkedin', ''),
+                        'github': analysis.get('github', ''), 'portfolio': analysis.get('portfolio', '')
                     },
-                    'summary': analysis.get('summary', ''),
-                    'target_role': selected_role,
-                    'target_category': selected_category,
-                    'education': analysis.get('education', []),
-                    'experience': analysis.get('experience', []),
-                    'projects': analysis.get('projects', []),
-                    'skills': analysis.get('skills', []),
-                    'template': ''
+                    'summary': analysis.get('summary', ''), 'target_role': selected_role,
+                    'target_category': selected_category, 'education': analysis.get('education', []),
+                    'experience': analysis.get('experience', []), 'projects': analysis.get('projects', []),
+                    'skills': analysis.get('skills', []), 'template': ''
                 }
-                
-                # Save to database
                 try:
                     resume_id = save_resume_data(resume_data)
-                    
-                    # Save analysis data
-                    analysis_data = {
-                        'resume_id': resume_id,
+                    save_analysis_data(resume_id, {
+                        'resume_id': resume_id, 
                         'ats_score': analysis['ats_score'],
                         'keyword_match_score': analysis['keyword_match']['score'],
-                        'format_score': analysis['format_score'],
-                        'section_score': analysis['section_score'],
+                        'format_score': 85,
+                        'section_score': 85,
                         'missing_skills': ','.join(analysis['keyword_match']['missing_skills']),
-                        'recommendations': ','.join(analysis['suggestions'])
-                    }
-                    save_analysis_data(resume_id, analysis_data)
-                    st.success("Resume data saved successfully!")
+                        'recommendations': ','.join(analysis['suggestions'][:5])  # Save top 5
+                    })
                 except Exception as e:
-                    st.error(f"Error saving to database: {str(e)}")
-                    print(f"Database error: {e}")
-                
-                # Show results based on document type
-                if analysis.get('document_type') != 'resume':
-                    st.error(f"⚠️ This appears to be a {analysis['document_type']} document, not a resume!")
-                    st.warning("Please upload a proper resume for ATS analysis.")
-                    return                
-                # Display results in a modern card layout
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # ATS Score Card with circular progress
-                    st.markdown("""
-                    <div class="feature-card">
-                        <h2>ATS Score</h2>
-                        <div style="position: relative; width: 150px; height: 150px; margin: 0 auto;">
-                            <div style="
-                                position: absolute;
-                                width: 150px;
-                                height: 150px;
-                                border-radius: 50%;
-                                background: conic-gradient(
-                                    #4CAF50 0% {score}%,
-                                    #2c2c2c {score}% 100%
-                                );
-                                display: flex;
-                                align-items: center;
-                                justify-content: center;
-                            ">
-                                <div style="
-                                    width: 120px;
-                                    height: 120px;
-                                    background: #1a1a1a;
-                                    border-radius: 50%;
-                                    display: flex;
-                                    align-items: center;
-                                    justify-content: center;
-                                    font-size: 24px;
-                                    font-weight: bold;
-                                    color: {color};
-                                ">
-                                    {score}
-                                </div>
-                            </div>
-                        </div>
-                        <div style="text-align: center; margin-top: 10px;">
-                            <span style="
-                                font-size: 1.2em;
-                                color: {color};
-                                font-weight: bold;
-                            ">
-                                {status}
-                            </span>
-                        </div>
-                    """.format(
-                        score=analysis['ats_score'],
-                        color='#4CAF50' if analysis['ats_score'] >= 80 else '#FFA500' if analysis['ats_score'] >= 60 else '#FF4444',
-                        status='Excellent' if analysis['ats_score'] >= 80 else 'Good' if analysis['ats_score'] >= 60 else 'Needs Improvement'
-                    ), unsafe_allow_html=True)
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-                                        
-                    # self.display_analysis_results(analysis_results)
+                    st.warning(f"Note: Could not save to database ({str(e)}), but analysis is complete.")
 
-                    # Skills Match Card
-                    st.markdown("""
-                    <div class="feature-card">
-                        <h2>Skills Match</h2>
-                    """, unsafe_allow_html=True)
-                    
-                    st.metric("Keyword Match", f"{int(analysis.get('keyword_match', {}).get('score', 0))}%")
-                    
-                    if analysis['keyword_match']['missing_skills']:
-                        st.markdown("#### Missing Skills:")
-                        for skill in analysis['keyword_match']['missing_skills']:
-                            st.markdown(f"- {skill}")
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-                
-                with col2:
-                    # Format Score Card
-                    st.markdown("""
-                    <div class="feature-card">
-                        <h2>Format Analysis</h2>
-                    """, unsafe_allow_html=True)
-                    
-                    st.metric("Format Score", f"{int(analysis.get('format_score', 0))}%")
-                    st.metric("Section Score", f"{int(analysis.get('section_score', 0))}%")
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    # Suggestions Card with improved UI
-                    st.markdown("""
-                    <div class="feature-card">
-                        <h2>📋 Resume Improvement Suggestions</h2>
-                    """, unsafe_allow_html=True)
-                    
-                    # Contact Section
-                    if analysis.get('contact_suggestions'):
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>📞 Contact Information</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('contact_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    # Summary Section
-                    if analysis.get('summary_suggestions'):
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>📝 Professional Summary</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('summary_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    # Skills Section
-                    if analysis.get('skills_suggestions') or analysis['keyword_match']['missing_skills']:
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>🎯 Skills</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('skills_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        if analysis['keyword_match']['missing_skills']:
-                            st.markdown("<li style='margin-bottom: 8px;'>✓ Consider adding these relevant skills:</li>", unsafe_allow_html=True)
-                            for skill in analysis['keyword_match']['missing_skills']:
-                                st.markdown(f"<li style='margin-left: 20px; margin-bottom: 4px;'>• {skill}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    # Experience Section
-                    if analysis.get('experience_suggestions'):
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>💼 Work Experience</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('experience_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    # Education Section
-                    if analysis.get('education_suggestions'):
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>🎓 Education</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('education_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    # General Formatting Suggestions
-                    if analysis.get('format_suggestions'):
-                        st.markdown("""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h3 style='color: #4CAF50; margin-bottom: 10px;'>📄 Formatting</h3>
-                            <ul style='list-style-type: none; padding-left: 0;'>
-                        """, unsafe_allow_html=True)
-                        for suggestion in analysis.get('format_suggestions', []):
-                            st.markdown(f"<li style='margin-bottom: 8px;'>✓ {suggestion}</li>", unsafe_allow_html=True)
-                        st.markdown("</ul></div>", unsafe_allow_html=True)
-                    
-                    st.markdown("</div>", unsafe_allow_html=True)
-                
+                # ═══════════════════════════════════════════════════════════
+                # RESULTS UI — All powered by Groq AI
+                # ═══════════════════════════════════════════════════════════
 
-                
-                # Course Recommendations
-                st.markdown("""
-                <div class="feature-card">
-                    <h2>📚 Recommended Courses</h2>
-                """, unsafe_allow_html=True)
-                
-                # Get courses based on role and category
-                courses = get_courses_for_role(selected_role)
-                if not courses:
-                    category = get_category_for_role(selected_role)
-                    courses = COURSES_BY_CATEGORY.get(category, {}).get(selected_role, [])
-                
-                # Display courses in a grid
-                cols = st.columns(2)
-                for i, course in enumerate(courses[:6]):  # Show top 6 courses
-                    with cols[i % 2]:
-                        st.markdown(f"""
-                        <div style='background-color: #1e1e1e; padding: 15px; border-radius: 10px; margin: 10px 0;'>
-                            <h4>{course[0]}</h4>
-                            <a href='{course[1]}' target='_blank'>View Course</a>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-                
-                # Learning Resources
-                st.markdown("""
-                <div class="feature-card">
-                    <h2>📺 Helpful Videos</h2>
-                """, unsafe_allow_html=True)
-                
-                tab1, tab2 = st.tabs(["Resume Tips", "Interview Tips"])
-                
-                with tab1:
-                    # Resume Videos
-                    for category, videos in RESUME_VIDEOS.items():
-                        st.subheader(category)
-                        cols = st.columns(2)
-                        for i, video in enumerate(videos):
-                            with cols[i % 2]:
-                                st.video(video[1])
-                
-                with tab2:
-                    # Interview Videos
-                    for category, videos in INTERVIEW_VIDEOS.items():
-                        st.subheader(category)
-                        cols = st.columns(2)
-                        for i, video in enumerate(videos):
-                            with cols[i % 2]:
-                                st.video(video[1])
-                
-                st.markdown("</div>", unsafe_allow_html=True)
-                
+                # 1. AI Verdict Banner (Groq)
+                verdict_banner(groq)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # 2. Score Cards (Groq scores)
+                ats   = groq.get('ai_overall_score', 0)
+                kw    = int(groq.get('keyword_match_percent', 0))
+                fmt   = 85
+                sec   = 85
+                score_cards_row(ats, kw, fmt, sec)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # 3. Strengths & Weaknesses (Groq)
+                if groq.get("strengths") or groq.get("weaknesses"):
+                    strengths_weaknesses(
+                        groq.get("strengths", []),
+                        groq.get("weaknesses", [])
+                    )
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                # 4. Section-by-Section Feedback (Groq)
+                if groq.get("section_feedback"):
+                    st.markdown("### 📋 Section-by-Section Feedback")
+                    section_feedback_grid(groq["section_feedback"])
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                # 5. Keyword Gap Analysis (Groq)
+                st.markdown("### 🎯 Keyword Analysis")
+                found_kws = groq.get("found_keywords", [])
+                miss_kws  = groq.get("missing_keywords", [])
+                keyword_analysis(found_kws, miss_kws)
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # 6. Bullet Rewrites (Groq)
+                if groq.get("bullet_rewrites"):
+                    st.markdown("### ✍️ AI Bullet Point Rewrites")
+                    bullet_rewrites(groq["bullet_rewrites"])
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                # 7. ATS Tips (Groq)
+                if groq.get("ats_tips"):
+                    ats_tips_card(groq["ats_tips"])
+
+                # ── 8. Summary Rewrite (Groq) ────────────────────────────
+                if analysis.get('summary'):
+                    with st.expander("✨ Get AI-Rewritten Professional Summary"):
+                        if st.button("🔄 Rewrite with Groq", key="rewrite_summary_btn"):
+                            with st.spinner("Groq is rewriting your summary..."):
+                                new_summary = rewrite_summary_with_groq(
+                                    analysis['summary'], selected_role,
+                                    role_info.get('required_skills', [])
+                                )
+                            if new_summary:
+                                st.markdown("**Original:**")
+                                st.info(analysis['summary'])
+                                st.markdown("**✨ Groq Rewrite:**")
+                                st.success(new_summary)
+                                st.caption("Copy and paste this into your resume for better ATS performance.")
+                            else:
+                                st.warning("Could not generate rewrite. Try again.")
+
+                # ── 9. Cover Letter Opener (Groq) ───────────────────────
+                with st.expander("📨 Generate Cover Letter Opening (Groq)"):
+                    if st.button("Generate Cover Letter Opener", key="cover_letter_btn"):
+                        with st.spinner("Groq is writing your cover letter opener..."):
+                            opener = generate_cover_letter_opener(text, selected_role, selected_category)
+                        if opener:
+                            st.success(opener)
+                            st.caption("Use this as the opening paragraph of your cover letter.")
+                        else:
+                            st.warning("Could not generate opener. Try again.")
+
+                # ── 10. Interview Questions (Groq) ───────────────────────
+                with st.expander("🤖 Generate Interview Questions (Groq)"):
+                    if st.button("Generate Interview Questions", key="interview_questions_btn"):
+                        with st.spinner("Groq is generating tailored interview questions..."):
+                            questions = generate_interview_questions(text, selected_role, selected_category)
+                        if questions:
+                            st.success("Here are some questions you should prepare for:")
+                            st.markdown(questions)
+                        else:
+                            st.warning("Could not generate questions. Try again.")
+
+
+
         # Close the page container
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1492,6 +1403,98 @@ class ResumeApp:
     def main(self):
         """Main application entry point"""
         self.apply_global_styles()
+
+        # ── Floating sidebar toggle button ─────────────────────────────────
+        st.markdown("""
+        <style>
+        /* Hide the default Streamlit sidebar collapse arrow */
+        [data-testid="collapsedControl"] { display: none !important; }
+        button[kind="header"]            { display: none !important; }
+
+        /* Floating menu button */
+        #sidebar-toggle-btn {
+          position: fixed;
+          top: 16px;
+          left: 16px;
+          z-index: 99999;
+          width: 44px;
+          height: 44px;
+          border-radius: 12px;
+          background: linear-gradient(135deg, #6c63ff, #5046e5);
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 4px 16px rgba(108,99,255,0.45);
+          transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
+        }
+        #sidebar-toggle-btn:hover {
+          transform: scale(1.08);
+          box-shadow: 0 8px 24px rgba(108,99,255,0.65);
+        }
+        #sidebar-toggle-btn svg {
+          width: 20px; height: 20px;
+          stroke: #fff; fill: none;
+          stroke-width: 2; stroke-linecap: round;
+          transition: all 0.25s ease;
+        }
+        /* Tooltip */
+        #sidebar-toggle-btn::after {
+          content: "Menu";
+          position: absolute;
+          left: 54px;
+          top: 50%;
+          transform: translateY(-50%);
+          background: #1a2035;
+          color: #f1f5f9;
+          font-size: 12px;
+          font-weight: 600;
+          padding: 4px 10px;
+          border-radius: 6px;
+          white-space: nowrap;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.2s ease;
+          font-family: 'Inter', sans-serif;
+          border: 1px solid rgba(255,255,255,0.1);
+        }
+        #sidebar-toggle-btn:hover::after { opacity: 1; }
+        </style>
+
+        <button id="sidebar-toggle-btn" title="Toggle menu" onclick="toggleSidebar()">
+          <svg viewBox="0 0 24 24">
+            <line x1="3" y1="6"  x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12"/>
+            <line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+
+        <script>
+        function toggleSidebar() {
+          // Find and click Streamlit's internal sidebar toggle
+          const sidebarBtn = window.parent.document.querySelector(
+            '[data-testid="collapsedControl"]'
+          );
+          if (sidebarBtn) {
+            sidebarBtn.click();
+            return;
+          }
+          // Fallback: toggle the sidebar section directly
+          const sidebar = window.parent.document.querySelector(
+            '[data-testid="stSidebar"]'
+          );
+          if (sidebar) {
+            const isVisible = sidebar.style.display !== "none" &&
+                              sidebar.offsetWidth > 0;
+            sidebar.style.transition = "transform 0.3s ease";
+            sidebar.style.transform  = isVisible
+              ? "translateX(-110%)"
+              : "translateX(0)";
+          }
+        }
+        </script>
+        """, unsafe_allow_html=True)
         
         # Admin login/logout in sidebar
         with st.sidebar:

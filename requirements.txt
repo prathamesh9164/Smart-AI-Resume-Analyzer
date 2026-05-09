@@ -14,4 +14,4 @@ streamlit-lottie
 requests
 spacy
 PyPDF2
-python-dotenv
+openai

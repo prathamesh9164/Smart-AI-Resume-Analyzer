@@ -197,7 +197,7 @@ The **next-gen** version, introducing **AI-powered resume analysis** for deeper 
 [![PDF Reporting](https://img.shields.io/badge/PDF%20Reports-Enabled-blueviolet?style=for-the-badge)](https://github.com/Hunterdii/Smart-AI-Resume-Analyzer)  
 [![LinkedIn Scraper](https://img.shields.io/badge/LinkedIn%20Scraper-Integrated-lightgrey?style=for-the-badge)](https://github.com/Hunterdii/Smart-AI-Resume-Analyzer)   -->
 
-- **🧠 Integrated AI with Google Gemini Model** for in-depth resume analysis  
+- **🧠 Integrated AI with Groq Model** for in-depth resume analysis  
 - **📄 AI-Powered Resume Score with Detailed PDF Report**  
 - **📌 AI-based Keyword Optimization & Suggestions**  
 - **🔎 Advanced Job Search with LinkedIn Scraper** (Customizable Number of Jobs)  
@@ -267,10 +267,10 @@ Ensure that the necessary NLP model is installed:
 
 <!--5. **Configure Environment Variables**
 
-Create a `.env` file inside the `utils/` directory and add your API keys:
+Create a `.env` file inside the project root and add your API keys:
 
    ```
-   GOOGLE_API_KEY=your_google_gemini_api_key
+   GROQ_API_KEY=your_groq_api_key
    ```
    -->
 
@@ -314,7 +314,7 @@ admin123
 
 2. Run the container:
    ```bash
-   docker run -p 8501:8501 -e GOOGLE_API_KEY=your_key smart-resume-analyzer
+   docker run -p 8501:8501 -e GROQ_API_KEY=your_key smart-resume-analyzer
    ```
 
 ## Project Structure
