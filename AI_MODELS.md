@@ -42,7 +42,7 @@ GROQ_API_KEY=your_groq_api_key_here
 
 When using the AI analysis features:
 
-- Resume data is sent to the respective AI model providers (Google or Anthropic via OpenRouter)
+- Resume data is sent to the respective AI model providers (Groq)
 - Analysis results are stored in the local database for reference
 - No personal data is shared with third parties beyond what's necessary for analysis
 - You can delete your data at any time through the application
