@@ -1,5 +1,7 @@
+# pyrefly: ignore [missing-import]
 import spacy
-import spacy.cli
+import subprocess
+import sys
 from collections import Counter
 from datetime import datetime
 
@@ -8,7 +10,7 @@ class ResumeAnalyzer:
         try:
             self.nlp = spacy.load("en_core_web_sm")
         except OSError:
-            spacy.cli.download("en_core_web_sm")
+            subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
             self.nlp = spacy.load("en_core_web_sm")
         
     def analyze_resume(self, resume_text):
