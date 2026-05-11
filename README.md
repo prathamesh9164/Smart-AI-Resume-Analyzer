@@ -1,3 +1,17 @@
+<div align="center">
+
+#  **🏝️ Smart AI Resume Analyzer 🏝️**  
+**Your Intelligent Career Partner**  
+<img src="https://github.com/user-attachments/assets/76906dbc-343d-4267-ace5-048d428fff42" width="20px"> Smart AI Resume Analyzer is your all-in-one tool to analyze, optimize, and craft resumes that stand out, helping you land your dream job.  
+
+<br/>
+<a href="https://smart-ai-resume-analyzer-m.streamlit.app/" target="_blank">
+   <img src="https://img.shields.io/badge/Live%20App-Streamlit-green?style=for-the-badge&logo=streamlit" alt="Live App"/>
+</a>
+<br/>
+<b>Try the app live: <a href="https://smart-ai-resume-analyzer-m.streamlit.app/" target="_blank">https://smart-ai-resume-analyzer-m.streamlit.app/</a></b>
+
+</div>
 
 <p><small>Best View in <a href="https://github.com/settings/appearance">Dark Mode</a> (Recommended)</small></p><br/>
 

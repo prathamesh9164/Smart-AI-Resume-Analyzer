@@ -13,20 +13,20 @@ class ResumeAnalyzer:
             subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
             self.nlp = spacy.load("en_core_web_sm")
         
-    def analyze_resume(self, resume_text):
-        """Analyze resume text and return metrics"""
+    def analyze_resume(self, resume_text, required_skills=None):
+        """Analyze resume text and return metrics. required_skills: set or list of skills to match (from API)."""
         doc = self.nlp(resume_text)
-        
+
         # Basic metrics
         word_count = len(resume_text.split())
         sentence_count = len(list(doc.sents))
-        
-        # Skills extraction
-        skills = self._extract_skills(doc)
-        
+
+        # Skills extraction (use API-provided skills if given, else extract all possible tokens)
+        skills = self._extract_skills(doc, required_skills)
+
         # Experience analysis
         experience_years = self._analyze_experience(doc)
-        
+
         # Calculate profile score
         profile_score = self._calculate_profile_score(
             word_count, sentence_count, len(skills), experience_years
@@ -47,25 +47,25 @@ class ResumeAnalyzer:
             )
         }
     
-    def _extract_skills(self, doc):
-        """Extract skills from resume"""
-        # Common technical skills keywords
-        tech_skills = {
-            "python", "java", "javascript", "react", "node.js", "sql",
-            "html", "css", "aws", "docker", "kubernetes", "git",
-            "machine learning", "ai", "data science", "analytics"
-        }
-        
+    def _extract_skills(self, doc, required_skills=None):
+        """Extract skills from resume. If required_skills is provided, only match those."""
         skills = set()
-        for token in doc:
-            if token.text.lower() in tech_skills:
-                skills.add(token.text)
-            # Check for compound skills (e.g., "machine learning")
-            if token.i < len(doc) - 1:
-                bigram = (token.text + " " + doc[token.i + 1].text).lower()
-                if bigram in tech_skills:
-                    skills.add(bigram)
-        
+        if required_skills is not None:
+            # Normalize required_skills to lowercase set
+            required_skills_set = set(s.lower() for s in required_skills)
+            for token in doc:
+                if token.text.lower() in required_skills_set:
+                    skills.add(token.text)
+                # Check for compound skills (e.g., "machine learning")
+                if token.i < len(doc) - 1:
+                    bigram = (token.text + " " + doc[token.i + 1].text).lower()
+                    if bigram in required_skills_set:
+                        skills.add(bigram)
+        else:
+            # If no required_skills provided, extract all unique tokens as skills (fallback)
+            for token in doc:
+                if token.is_alpha and len(token.text) > 1:
+                    skills.add(token.text)
         return skills
     
     def _analyze_experience(self, doc):

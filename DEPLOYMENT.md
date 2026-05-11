@@ -1,3 +1,37 @@
+## Streamlit Cloud Deployment
+
+You can try the Smart AI Resume Analyzer instantly on Streamlit Cloud:
+
+**Live App:** [https://smart-ai-resume-analyzer-m.streamlit.app/](https://smart-ai-resume-analyzer-m.streamlit.app/)
+
+When deploying to Streamlit Cloud, you need to ensure Chrome is available. Our application includes multiple fallback mechanisms to handle this.
+
+### Steps for Streamlit Cloud
+1. Push your code to a GitHub repository
+2. Create a new app in Streamlit Cloud pointing to your repository
+3. Make sure your `requirements.txt` includes all necessary dependencies:
+   - `selenium>=4.10.0`
+   - `webdriver-manager>=4.0.0`
+   - `chromedriver-autoinstaller>=0.6.2`
+4. Ensure the `packages.txt` file is in your repository with:
+   ```
+   chromium
+   chromium-driver
+   libglib2.0-0
+   libnss3
+   libgconf-2-4
+   libfontconfig1
+   xvfb
+   wget
+   unzip
+   ```
+
+### Troubleshooting Streamlit Cloud
+If you encounter issues with Chrome on Streamlit Cloud:
+
+1. Check the logs for specific error messages
+2. Try adding a custom command to run the setup script before the app starts:
+   - In the Streamlit Cloud settings, add a "Main file path" of `run_app.py` instead of `app.py`
 # Deployment Guide for Smart AI Resume Analyzer
 
 This guide provides instructions for deploying the Smart AI Resume Analyzer application in various environments, with a focus on resolving Chrome webdriver issues.
