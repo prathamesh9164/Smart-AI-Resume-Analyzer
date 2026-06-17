@@ -117,6 +117,37 @@ RESUME HIGHLIGHTS:
 
 Return ONLY a numbered list of the questions, nothing else. Make them realistic and challenging."""
 
+_BUILDER_SUMMARY_PROMPT = """You are an expert resume writer. Generate a powerful professional summary (3-4 sentences) for the candidate.
+
+CANDIDATE INFO:
+Name: {name}
+Experience: {experiences}
+Skills: {skills}
+Target Role: {role}
+
+Return ONLY the summary text, nothing else. Make it ATS-optimized, highlighting key strengths and achievements."""
+
+_EXPERIENCE_BULLETS_PROMPT = """You are an expert resume writer. The candidate worked as {job_title} at {company}.
+Context/Details provided by candidate: {context}
+
+Generate 3-4 strong, action-oriented resume bullet points highlighting responsibilities and achievements. Use metrics where appropriate (or placeholders). 
+Return ONLY the bullet points, each on a new line starting with a bullet character (•). Do not include any other text."""
+
+_PROJECT_DESC_PROMPT = """You are an expert resume writer. The candidate worked on a project named "{project_name}" using these technologies: {tech_stack}.
+Additional Context: {context}
+
+Generate a concise 2-sentence project description followed by 2-3 bullet points of key achievements or features. 
+Return ONLY the description and bullet points. Bullet points should start with (•). Do not include any other text."""
+
+_FULL_COVER_LETTER_PROMPT = """You are an expert career coach. Write a complete, professional, 3-paragraph cover letter for the candidate applying for the role of {role}.
+
+CANDIDATE DETAILS:
+Name: {name}
+Experience: {experiences}
+Skills: {skills}
+
+Return ONLY the cover letter text, properly formatted. Do not include placeholder addresses at the top, just start with a professional greeting."""
+
 
 def _create_response(prompt: str, temperature: float, max_output_tokens: int):
     if not _init_groq():
@@ -198,6 +229,66 @@ def generate_interview_questions(resume_text: str, role: str, category: str):
         resume_text=resume_text[:3000]
     )
     return _create_response(prompt, 0.6, 500)
+
+
+def generate_summary_for_builder(personal_info: dict, experiences: list, skills: dict, role: str = "General"):
+    """Generate a professional summary for the resume builder."""
+    if not _init_groq():
+        return None
+
+    exp_str = ", ".join([f"{e.get('position', '')} at {e.get('company', '')}" for e in experiences if e.get('position')])
+    skills_str = ", ".join(skills.get('technical', []) + skills.get('soft', []))
+
+    prompt = _BUILDER_SUMMARY_PROMPT.format(
+        name=personal_info.get('full_name', 'Candidate'),
+        experiences=exp_str or "Entry Level",
+        skills=skills_str or "General Skills",
+        role=role
+    )
+    return _create_response(prompt, 0.6, 300)
+
+
+def generate_experience_bullets(job_title: str, company: str, context: str):
+    """Generate bullet points for an experience entry."""
+    if not _init_groq():
+        return None
+
+    prompt = _EXPERIENCE_BULLETS_PROMPT.format(
+        job_title=job_title or "Employee",
+        company=company or "Company",
+        context=context or "General responsibilities"
+    )
+    return _create_response(prompt, 0.7, 400)
+
+
+def generate_project_description(project_name: str, tech_stack: str, context: str):
+    """Generate description and bullets for a project entry."""
+    if not _init_groq():
+        return None
+
+    prompt = _PROJECT_DESC_PROMPT.format(
+        project_name=project_name or "Project",
+        tech_stack=tech_stack or "Various technologies",
+        context=context or "General project"
+    )
+    return _create_response(prompt, 0.7, 400)
+
+
+def generate_full_cover_letter(personal_info: dict, experiences: list, skills: dict, role: str = "Target Role"):
+    """Generate a full cover letter."""
+    if not _init_groq():
+        return None
+
+    exp_str = ", ".join([f"{e.get('position', '')} at {e.get('company', '')}" for e in experiences if e.get('position')])
+    skills_str = ", ".join(skills.get('technical', []) + skills.get('soft', []))
+
+    prompt = _FULL_COVER_LETTER_PROMPT.format(
+        name=personal_info.get('full_name', 'Candidate'),
+        experiences=exp_str or "Entry Level",
+        skills=skills_str or "General Skills",
+        role=role
+    )
+    return _create_response(prompt, 0.7, 800)
 
 
 def is_groq_available() -> bool:

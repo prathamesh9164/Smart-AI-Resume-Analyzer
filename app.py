@@ -1,6 +1,7 @@
 """
 Smart Resume AI - Main Application
 """
+# pyrefly: ignore [missing-import]
 import streamlit as st
 
 # Set page config at the very beginning
@@ -554,6 +555,20 @@ class ResumeApp:
 
         # Professional Summary
         st.subheader("Professional Summary")
+        
+        if is_groq_available():
+            if st.button("✨ Generate Summary with Groq"):
+                with st.spinner("Generating summary..."):
+                    from utils.groq_analyzer import generate_summary_for_builder
+                    new_summary = generate_summary_for_builder(
+                        st.session_state.form_data.get('personal_info', {}),
+                        st.session_state.form_data.get('experiences', []),
+                        st.session_state.form_data.get('skills_categories', {})
+                    )
+                    if new_summary:
+                        st.session_state.form_data['summary'] = new_summary
+                        st.rerun()
+
         summary = st.text_area("Professional Summary", value=st.session_state.form_data.get('summary', ''), height=150,
                              help="Write a brief summary highlighting your key skills and experience")
         
@@ -589,6 +604,25 @@ class ResumeApp:
                 
                 # Responsibilities
                 st.markdown("##### Key Responsibilities")
+                
+                if is_groq_available():
+                    if st.button("✨ Generate Bullet Points with Groq", key=f"gen_exp_{idx}"):
+                        with st.spinner("Generating bullet points..."):
+                            from utils.groq_analyzer import generate_experience_bullets
+                            bullets = generate_experience_bullets(
+                                exp.get('position', ''),
+                                exp.get('company', ''),
+                                exp.get('description', '')
+                            )
+                            if bullets:
+                                current_resp = '\n'.join(exp.get('responsibilities', []))
+                                if current_resp:
+                                    current_resp += '\n' + bullets
+                                else:
+                                    current_resp = bullets
+                                exp['responsibilities'] = [r.replace('• ', '').strip() for r in current_resp.split('\n') if r.strip()]
+                                st.rerun()
+
                 resp_text = st.text_area("Enter responsibilities (one per line)", 
                                        key=f"resp_{idx}",
                                        value='\n'.join(exp.get('responsibilities', [])),
@@ -635,6 +669,19 @@ class ResumeApp:
                                                  value=proj.get('description', ''),
                                                  help="Brief overview of the project and its goals")
                 
+                if is_groq_available():
+                    if st.button("✨ Generate Description with Groq", key=f"gen_proj_{idx}"):
+                        with st.spinner("Generating project details..."):
+                            from utils.groq_analyzer import generate_project_description
+                            details = generate_project_description(
+                                proj.get('name', ''),
+                                proj.get('technologies', ''),
+                                proj.get('description', '')
+                            )
+                            if details:
+                                proj['description'] = details
+                                st.rerun()
+
                 # Project Responsibilities
                 st.markdown("##### Key Responsibilities")
                 proj_resp_text = st.text_area("Enter responsibilities (one per line)", 
@@ -745,88 +792,113 @@ class ResumeApp:
         })
         
         # Generate Resume button
-        if st.button("Generate Resume 📄", type="primary"):
-            print("Validating form data...")
-            print(f"Session state form data: {st.session_state.form_data}")
-            print(f"Email input value: {st.session_state.get('email_input', '')}")
-            
-            # Get the current values from form
-            current_name = st.session_state.form_data['personal_info']['full_name'].strip()
-            current_email = st.session_state.email_input if 'email_input' in st.session_state else ''
-            
-            print(f"Current name: {current_name}")
-            print(f"Current email: {current_email}")
-            
-            # Validate required fields
-            if not current_name:
-                st.error("⚠️ Please enter your full name.")
-                return
-            
-            if not current_email:
-                st.error("⚠️ Please enter your email address.")
-                return
+        col_gen1, col_gen2 = st.columns(2)
+        
+        with col_gen2:
+            if is_groq_available():
+                if st.button("✉️ Generate Full Cover Letter with Groq"):
+                    with st.spinner("Generating Cover Letter..."):
+                        from utils.groq_analyzer import generate_full_cover_letter
+                        cl = generate_full_cover_letter(
+                            st.session_state.form_data.get('personal_info', {}),
+                            st.session_state.form_data.get('experiences', []),
+                            st.session_state.form_data.get('skills_categories', {})
+                        )
+                        if cl:
+                            st.session_state.generated_cover_letter = cl
+
+        if st.session_state.get('generated_cover_letter'):
+            st.success("Cover Letter Generated!")
+            st.download_button(
+                label="Download Cover Letter 📥",
+                data=st.session_state.generated_cover_letter,
+                file_name="Cover_Letter.txt",
+                mime="text/plain"
+            )
+
+        with col_gen1:
+            if st.button("Generate Resume 📄", type="primary"):
+                print("Validating form data...")
+                print(f"Session state form data: {st.session_state.form_data}")
+                print(f"Email input value: {st.session_state.get('email_input', '')}")
                 
-            # Update email in form data one final time
-            st.session_state.form_data['personal_info']['email'] = current_email
-            
-            try:
-                print("Preparing resume data...")
-                # Prepare resume data with current form values
-                resume_data = {
-                    "personal_info": st.session_state.form_data['personal_info'],
-                    "summary": st.session_state.form_data.get('summary', '').strip(),
-                    "experience": st.session_state.form_data.get('experiences', []),
-                    "education": st.session_state.form_data.get('education', []),
-                    "projects": st.session_state.form_data.get('projects', []),
-                    "skills": st.session_state.form_data.get('skills_categories', {
-                        'technical': [],
-                        'soft': [],
-                        'languages': [],
-                        'tools': []
-                    }),
-                    "template": selected_template
-                }
+                # Get the current values from form
+                current_name = st.session_state.form_data['personal_info']['full_name'].strip()
+                current_email = st.session_state.email_input if 'email_input' in st.session_state else ''
                 
-                print(f"Resume data prepared: {resume_data}")
+                print(f"Current name: {current_name}")
+                print(f"Current email: {current_email}")
+                
+                # Validate required fields
+                if not current_name:
+                    st.error("⚠️ Please enter your full name.")
+                    return
+                
+                if not current_email:
+                    st.error("⚠️ Please enter your email address.")
+                    return
+                    
+                # Update email in form data one final time
+                st.session_state.form_data['personal_info']['email'] = current_email
                 
                 try:
-                    # Generate resume
-                    resume_buffer = self.builder.generate_resume(resume_data)
-                    if resume_buffer:
-                        try:
-                            # Save resume data to database
-                            save_resume_data(resume_data)
+                    print("Preparing resume data...")
+                    # Prepare resume data with current form values
+                    resume_data = {
+                        "personal_info": st.session_state.form_data['personal_info'],
+                        "summary": st.session_state.form_data.get('summary', '').strip(),
+                        "experience": st.session_state.form_data.get('experiences', []),
+                        "education": st.session_state.form_data.get('education', []),
+                        "projects": st.session_state.form_data.get('projects', []),
+                        "skills": st.session_state.form_data.get('skills_categories', {
+                            'technical': [],
+                            'soft': [],
+                            'languages': [],
+                            'tools': []
+                        }),
+                        "template": selected_template
+                    }
+                    
+                    print(f"Resume data prepared: {resume_data}")
+                    
+                    try:
+                        # Generate resume
+                        resume_buffer = self.builder.generate_resume(resume_data)
+                        if resume_buffer:
+                            try:
+                                # Save resume data to database
+                                save_resume_data(resume_data)
+                                
+                                # Offer the resume for download
+                                st.success("✅ Resume generated successfully!")
+                                st.download_button(
+                                    label="Download Resume 📥",
+                                    data=resume_buffer,
+                                    file_name=f"{current_name.replace(' ', '_')}_resume.docx",
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                )
+                            except Exception as db_error:
+                                print(f"Warning: Failed to save to database: {str(db_error)}")
+                                # Still allow download even if database save fails
+                                st.warning("⚠️ Resume generated but couldn't be saved to database")
+                                st.download_button(
+                                    label="Download Resume 📥",
+                                    data=resume_buffer,
+                                    file_name=f"{current_name.replace(' ', '_')}_resume.docx",
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                )
+                        else:
+                            st.error("❌ Failed to generate resume. Please try again.")
+                            print("Resume buffer was None")
+                    except Exception as gen_error:
+                        print(f"Error during resume generation: {str(gen_error)}")
+                        print(f"Full traceback: {traceback.format_exc()}")
+                        st.error(f"❌ Error generating resume: {str(gen_error)}")
                             
-                            # Offer the resume for download
-                            st.success("✅ Resume generated successfully!")
-                            st.download_button(
-                                label="Download Resume 📥",
-                                data=resume_buffer,
-                                file_name=f"{current_name.replace(' ', '_')}_resume.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                            )
-                        except Exception as db_error:
-                            print(f"Warning: Failed to save to database: {str(db_error)}")
-                            # Still allow download even if database save fails
-                            st.warning("⚠️ Resume generated but couldn't be saved to database")
-                            st.download_button(
-                                label="Download Resume 📥",
-                                data=resume_buffer,
-                                file_name=f"{current_name.replace(' ', '_')}_resume.docx",
-                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                            )
-                    else:
-                        st.error("❌ Failed to generate resume. Please try again.")
-                        print("Resume buffer was None")
-                except Exception as gen_error:
-                    print(f"Error during resume generation: {str(gen_error)}")
+                except Exception as e:
+                    print(f"Error preparing resume data: {str(e)}")
                     print(f"Full traceback: {traceback.format_exc()}")
-                    st.error(f"❌ Error generating resume: {str(gen_error)}")
-                        
-            except Exception as e:
-                print(f"Error preparing resume data: {str(e)}")
-                print(f"Full traceback: {traceback.format_exc()}")
-                st.error(f"❌ Error preparing resume data: {str(e)}")
+                    st.error(f"❌ Error preparing resume data: {str(e)}")
     
     def render_about(self):
         """Render the about page"""
