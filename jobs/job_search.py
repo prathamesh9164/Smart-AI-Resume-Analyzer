@@ -8,7 +8,7 @@ from .suggestions import (
     SALARY_RANGES,
     JOB_TYPES
 )
-from .companies import get_featured_companies, get_market_insights
+from .companies import get_featured_companies, get_market_insights, build_smart_career_url
 
 def filter_suggestions(query: str, suggestions: List[Dict]) -> List[Dict]:
     """Filter suggestions based on user input"""
@@ -48,8 +48,14 @@ def get_filter_options():
         ]
     }
 
-def render_company_section():
-    """Render the featured companies section"""
+def render_company_section(
+    job_query: str = "",
+    location: str = "",
+    experience: str = "",
+    date_posted: str = "",
+    job_type: str = "",
+):
+    """Render the featured companies section with pre-filtered career links."""
     st.markdown("""
         <style>
         .company-grid {
@@ -105,20 +111,38 @@ def render_company_section():
             st.markdown('<div class="company-grid">', unsafe_allow_html=True)
             
             for company in companies:
-                st.markdown(f"""
-                    <a href="{company['careers_url']}" target="_blank" style="text-decoration: none; color: inherit;">
-                        <div class="company-card">
-                            <div class="company-header">
-                                <i class="{company['icon']} company-icon" style="color: {company['color']}"></i>
-                                <h3 style="margin: 0;">{company['name']}</h3>
+                    smart_url = build_smart_career_url(
+                        company['name'],
+                        role=job_query,
+                        location=location,
+                        experience=experience,
+                        date_posted=date_posted,
+                        job_type=job_type,
+                    )
+                    # Build a human-readable filter badge
+                    badge_parts = []
+                    if job_query:    badge_parts.append(f"🔍 {job_query}")
+                    if location:     badge_parts.append(f"📍 {location}")
+                    if experience and experience not in ("all", ""): badge_parts.append(f"🎓 {experience} yrs")
+                    if date_posted and date_posted != "Any time":     badge_parts.append(f"🕐 {date_posted}")
+                    if job_type and job_type not in ("All Types", ""): badge_parts.append(f"💼 {job_type}")
+                    filter_badge = "  ·  ".join(badge_parts)
+
+                    st.markdown(f"""
+                        <a href="{smart_url}" target="_blank" style="text-decoration: none; color: inherit;">
+                            <div class="company-card">
+                                <div class="company-header">
+                                    <i class="{company['icon']} company-icon" style="color: {company['color']}"></i>
+                                    <h3 style="margin: 0;">{company['name']}</h3>
+                                </div>
+                                <p style="margin: 0.5rem 0; color: #888;">{company['description']}</p>
+                                <div class="company-categories">
+                                    {' '.join(f'<span class="company-category">{cat}</span>' for cat in company['categories'])}
+                                </div>
+                                {f'<p style="margin:0.5rem 0 0;font-size:0.73rem;color:#00bfa5;line-height:1.6;">{filter_badge}</p>' if filter_badge else ''}
                             </div>
-                            <p style="margin: 0.5rem 0; color: #888;">{company['description']}</p>
-                            <div class="company-categories">
-                                {' '.join(f'<span class="company-category">{cat}</span>' for cat in company['categories'])}
-                            </div>
-                        </div>
-                    </a>
-                """, unsafe_allow_html=True)
+                        </a>
+                    """, unsafe_allow_html=True)
             
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -128,31 +152,57 @@ def render_market_insights():
     
     st.markdown("""
         <style>
-        .insights-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        /* ── Horizontal scroll strip for trending / location cards ── */
+        .scroll-strip {
+            display: flex;
+            flex-direction: row;
             gap: 1rem;
-            padding: 1rem 0;
+            overflow-x: auto;
+            padding: 0.75rem 0.25rem 1rem;
+            scrollbar-width: thin;
+            scrollbar-color: #00bfa5 transparent;
+            -webkit-overflow-scrolling: touch;
+        }
+        .scroll-strip::-webkit-scrollbar {
+            height: 5px;
+        }
+        .scroll-strip::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .scroll-strip::-webkit-scrollbar-thumb {
+            background: #00bfa5;
+            border-radius: 99px;
         }
         .insight-card {
+            flex: 0 0 160px;           /* fixed width, won't shrink */
             background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 1rem;
+            border-radius: 14px;
+            padding: 1.1rem 0.9rem;
             text-align: center;
-            transition: transform 0.3s ease, background 0.3s ease;
+            transition: transform 0.25s ease, background 0.25s ease;
+            border: 1px solid rgba(0,191,165,0.12);
         }
         .insight-card:hover {
             transform: translateY(-5px);
-            background: rgba(255, 255, 255, 0.08);
+            background: rgba(0, 191, 165, 0.09);
+            border-color: rgba(0,191,165,0.35);
         }
         .insight-icon {
             font-size: 2rem;
             margin-bottom: 0.5rem;
             color: #00bfa5;
         }
+        .insight-card h4 {
+            font-size: 0.88rem;
+            margin: 0.3rem 0;
+            color: #e2e8f0;
+            line-height: 1.4;
+        }
         .growth-text {
-            color: #00c853;
-            font-weight: bold;
+            color: #00e676;
+            font-weight: 700;
+            font-size: 0.95rem;
+            margin: 0;
         }
         .salary-card {
             background: rgba(255, 255, 255, 0.05);
@@ -216,28 +266,27 @@ def render_market_insights():
     tabs = st.tabs(["Trending Skills", "Top Locations", "Salary Insights"])
     
     with tabs[0]:
-        st.markdown('<div class="insights-grid">', unsafe_allow_html=True)
-        for skill in insights["trending_skills"]:
-            st.markdown(f"""
-                <div class="insight-card">
-                    <i class="{skill['icon']} insight-icon"></i>
-                    <h4>{skill['name']}</h4>
-                    <p class="growth-text">Growth: {skill['growth']}</p>
-                </div>
-            """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        # Build all cards in ONE markdown call so they share the flex container
+        cards_html = "".join(f"""
+            <div class="insight-card">
+                <i class="{skill['icon']} insight-icon"></i>
+                <h4>{skill['name']}</h4>
+                <p class="growth-text">{skill['growth']}</p>
+            </div>"""
+            for skill in insights["trending_skills"]
+        )
+        st.markdown(f'<div class="scroll-strip">{cards_html}</div>', unsafe_allow_html=True)
     
     with tabs[1]:
-        st.markdown('<div class="insights-grid">', unsafe_allow_html=True)
-        for location in insights["top_locations"]:
-            st.markdown(f"""
-                <div class="insight-card">
-                    <i class="{location['icon']} insight-icon"></i>
-                    <h4>{location['name']}</h4>
-                    <p>Available Jobs: {location['jobs']}</p>
-                </div>
-            """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        locs_html = "".join(f"""
+            <div class="insight-card">
+                <i class="{loc['icon']} insight-icon"></i>
+                <h4>{loc['name']}</h4>
+                <p style="margin:0;font-size:0.8rem;color:#94a3b8;">{loc['jobs']} jobs</p>
+            </div>"""
+            for loc in insights["top_locations"]
+        )
+        st.markdown(f'<div class="scroll-strip">{locs_html}</div>', unsafe_allow_html=True)
     
     with tabs[2]:
         # Role-specific icons
@@ -274,65 +323,135 @@ def render_job_search():
     """Render job search page with enhanced features"""
     st.title("🔍 Smart Job Search")
     st.markdown("Find Your Dream Job Across Multiple Platforms")
-    
+
     # Market Insights Section (Above Search)
     render_market_insights()
-    
+
     # Job Search Section
     with st.container():
         st.markdown('<div class="search-container">', unsafe_allow_html=True)
-        
+
+        # ── Initialise session-state search values ──────────────────────────
+        if "js_job_query" not in st.session_state:
+            st.session_state.js_job_query = ""
+        if "js_location" not in st.session_state:
+            st.session_state.js_location = ""
+        if "js_experience" not in st.session_state:
+            st.session_state.js_experience = "all"
+        if "js_date_posted" not in st.session_state:
+            st.session_state.js_date_posted = "Any time"
+        if "js_job_type" not in st.session_state:
+            st.session_state.js_job_type = "All Types"
+
         # Search inputs
         col1, col2 = st.columns([2, 1])
-        
+
         with col1:
-            job_query = st.text_input("Job Title / Skills", 
-                                    value="", 
-                                    placeholder="e.g. Software Engineer, Data Scientist")
-            
-            if job_query and len(job_query) >= 2:
-                filtered_jobs = [s["text"] for s in JOB_SUGGESTIONS if job_query.lower() in s["text"].lower()]
+            raw_job_query = st.text_input(
+                "Job Title / Skills",
+                value=st.session_state.js_job_query,
+                placeholder="e.g. Software Engineer, Data Scientist",
+                key="js_job_input"
+            )
+            job_query = raw_job_query  # working value for this render
+
+            if raw_job_query and len(raw_job_query) >= 2:
+                filtered_jobs = [
+                    s["text"] for s in JOB_SUGGESTIONS
+                    if raw_job_query.lower() in s["text"].lower()
+                ]
                 if filtered_jobs:
-                    job_query = st.selectbox("Select Job Title", filtered_jobs)
-        
+                    selected = st.selectbox(
+                        "Select Job Title", filtered_jobs, key="js_job_select"
+                    )
+                    job_query = selected  # use the autocomplete pick
+
         with col2:
-            location = st.text_input("Location", 
-                                   value="",
-                                   placeholder="e.g. Bangalore, Mumbai")
-            
-            if location and len(location) >= 2:
-                filtered_locations = [s["text"] for s in LOCATION_SUGGESTIONS if location.lower() in s["text"].lower()]
+            raw_location = st.text_input(
+                "Location",
+                value=st.session_state.js_location,
+                placeholder="e.g. Bangalore, Mumbai",
+                key="js_loc_input"
+            )
+            location = raw_location
+
+            if raw_location and len(raw_location) >= 2:
+                filtered_locations = [
+                    s["text"] for s in LOCATION_SUGGESTIONS
+                    if raw_location.lower() in s["text"].lower()
+                ]
                 if filtered_locations:
-                    location = st.selectbox("Select Location", filtered_locations)
+                    selected_loc = st.selectbox(
+                        "Select Location", filtered_locations, key="js_loc_select"
+                    )
+                    location = selected_loc
 
         # Advanced Filters
         with st.expander("🎯 Advanced Filters"):
             st.markdown('<div class="filter-section">', unsafe_allow_html=True)
-            filter_cols = st.columns(3)
-            
+            filter_cols = st.columns(4)
+
             with filter_cols[0]:
-                experience = st.selectbox("Experience Level",
-                                        options=get_filter_options()["experience_levels"],
-                                        format_func=lambda x: x["text"])
-            
+                exp_options = get_filter_options()["experience_levels"]
+                exp_idx = next(
+                    (i for i, o in enumerate(exp_options)
+                     if o["id"] == st.session_state.js_experience), 0
+                )
+                experience = st.selectbox(
+                    "Experience Level",
+                    options=exp_options,
+                    index=exp_idx,
+                    format_func=lambda x: x["text"],
+                    key="js_exp_select"
+                )
             with filter_cols[1]:
-                salary_range = st.selectbox("Salary Range",
-                                          options=get_filter_options()["salary_ranges"],
-                                          format_func=lambda x: x["text"])
-            
+                date_options = ["Any time", "Past 24 hours", "Past week", "Past month"]
+                date_idx = date_options.index(st.session_state.js_date_posted) \
+                    if st.session_state.js_date_posted in date_options else 0
+                date_posted = st.selectbox(
+                    "Date Posted",
+                    options=date_options,
+                    index=date_idx,
+                    key="js_date_select"
+                )
             with filter_cols[2]:
-                job_type = st.selectbox("Job Type",
-                                      options=get_filter_options()["job_types"],
-                                      format_func=lambda x: x["text"])
-            
+                salary_range = st.selectbox(
+                    "Salary Range",
+                    options=get_filter_options()["salary_ranges"],
+                    format_func=lambda x: x["text"],
+                    key="js_salary_select"
+                )
+            with filter_cols[3]:
+                jtype_options = ["All Types", "Full Time", "Part Time", "Contract", "Remote"]
+                jtype_idx = jtype_options.index(st.session_state.js_job_type) \
+                    if st.session_state.js_job_type in jtype_options else 0
+                job_type = st.selectbox(
+                    "Job Type",
+                    options=jtype_options,
+                    index=jtype_idx,
+                    key="js_jtype_select"
+                )
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Search button
+        # Search button — persist values into session_state on click
         if st.button("SEARCH JOBS", type="primary"):
+            # Persist all filters so company cards stay pre-filtered after reruns
+            st.session_state.js_job_query  = job_query
+            st.session_state.js_location   = location
+            st.session_state.js_experience = experience["id"] if isinstance(experience, dict) else experience
+            st.session_state.js_date_posted = date_posted
+            st.session_state.js_job_type   = job_type
+
             if job_query:
                 job_portal = JobPortal()
-                results = job_portal.search_jobs(job_query, location, experience)
-                
+                results = job_portal.search_jobs(
+                    job_query,
+                    location=location,
+                    experience=experience,
+                    date_posted=date_posted,
+                    job_type=job_type,
+                )
+
                 if results:
                     st.markdown("### 🎯 Job Search Results")
                     for result in results:
@@ -353,10 +472,16 @@ def render_job_search():
                     st.warning("No results found. Try different search terms or filters.")
             else:
                 st.warning("Please enter a job title or skills to search.")
-        
+
         st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Featured Companies Section (Below Search)
-    render_company_section()
+
+    # ── Company cards always use persisted session_state values ────────────
+    render_company_section(
+        job_query=st.session_state.get("js_job_query", ""),
+        location=st.session_state.get("js_location", ""),
+        experience=st.session_state.get("js_experience", ""),
+        date_posted=st.session_state.get("js_date_posted", ""),
+        job_type=st.session_state.get("js_job_type", ""),
+    )
 
 # Removed render_job_search() call to prevent automatic rendering

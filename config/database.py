@@ -1,5 +1,9 @@
 import sqlite3
+import json
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 def get_database_connection():
     """Create and return a database connection"""
@@ -86,21 +90,23 @@ def init_database():
     conn.close()
 
 def save_resume_data(data):
-    """Save resume data to database"""
+    """Save resume data to database.
+    List fields are stored as JSON strings for reliable round-trip parsing.
+    """
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
         personal_info = data.get('personal_info', {})
-        
+
         cursor.execute('''
         INSERT INTO resume_data (
             name, email, phone, linkedin, github, portfolio,
-            summary, target_role, target_category, education, 
+            summary, target_role, target_category, education,
             experience, projects, skills, template
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            personal_info.get('full_name', ''),
+            personal_info.get('full_name') or personal_info.get('name', ''),
             personal_info.get('email', ''),
             personal_info.get('phone', ''),
             personal_info.get('linkedin', ''),
@@ -109,27 +115,27 @@ def save_resume_data(data):
             data.get('summary', ''),
             data.get('target_role', ''),
             data.get('target_category', ''),
-            str(data.get('education', [])),
-            str(data.get('experience', [])),
-            str(data.get('projects', [])),
-            str(data.get('skills', [])),
+            json.dumps(data.get('education', [])),
+            json.dumps(data.get('experience', [])),
+            json.dumps(data.get('projects', [])),
+            json.dumps(data.get('skills', [])),
             data.get('template', '')
         ))
-        
+
         conn.commit()
         return cursor.lastrowid
-    except Exception as e:
-        print(f"Error saving resume data: {str(e)}")
+    except Exception as exc:
+        logger.error("Error saving resume data: %s", exc)
         conn.rollback()
         return None
     finally:
         conn.close()
 
 def save_analysis_data(resume_id, analysis):
-    """Save resume analysis data"""
+    """Save resume analysis data."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
         cursor.execute('''
         INSERT INTO resume_analysis (
@@ -146,69 +152,66 @@ def save_analysis_data(resume_id, analysis):
             analysis.get('missing_skills', ''),
             analysis.get('recommendations', '')
         ))
-        
+
         conn.commit()
-    except Exception as e:
-        print(f"Error saving analysis data: {str(e)}")
+    except Exception as exc:
+        logger.error("Error saving analysis data: %s", exc)
         conn.rollback()
     finally:
         conn.close()
 
 def get_resume_stats():
-    """Get statistics about resumes"""
+    """Get statistics about resumes."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
-        # Get total resumes
         cursor.execute('SELECT COUNT(*) FROM resume_data')
         total_resumes = cursor.fetchone()[0]
-        
-        # Get average ATS score
+
         cursor.execute('SELECT AVG(ats_score) FROM resume_analysis')
         avg_ats_score = cursor.fetchone()[0] or 0
-        
-        # Get recent activity
+
         cursor.execute('''
-        SELECT name, target_role, created_at 
-        FROM resume_data 
-        ORDER BY created_at DESC 
+        SELECT name, target_role, created_at
+        FROM resume_data
+        ORDER BY created_at DESC
         LIMIT 5
         ''')
         recent_activity = cursor.fetchall()
-        
+
         return {
             'total_resumes': total_resumes,
             'avg_ats_score': round(avg_ats_score, 2),
             'recent_activity': recent_activity
         }
-    except Exception as e:
-        print(f"Error getting resume stats: {str(e)}")
+    except Exception as exc:
+        logger.error("Error getting resume stats: %s", exc)
         return None
     finally:
         conn.close()
 
 def log_admin_action(admin_email, action):
-    """Log admin login/logout actions"""
+    """Log admin login/logout actions."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
         cursor.execute('''
         INSERT INTO admin_logs (admin_email, action)
         VALUES (?, ?)
         ''', (admin_email, action))
         conn.commit()
-    except Exception as e:
-        print(f"Error logging admin action: {str(e)}")
+    except Exception as exc:
+        logger.error("Error logging admin action: %s", exc)
     finally:
         conn.close()
 
 def get_admin_logs():
-    """Get all admin login/logout logs"""
+    """Get all admin login/logout logs."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
         cursor.execute('''
         SELECT admin_email, action, timestamp
@@ -216,21 +219,20 @@ def get_admin_logs():
         ORDER BY timestamp DESC
         ''')
         return cursor.fetchall()
-    except Exception as e:
-        print(f"Error getting admin logs: {str(e)}")
+    except Exception as exc:
+        logger.error("Error getting admin logs: %s", exc)
         return []
     finally:
         conn.close()
 
 def get_all_resume_data():
-    """Get all resume data for admin dashboard"""
+    """Get all resume data for admin dashboard."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
-        # Get resume data joined with analysis data
         cursor.execute('''
-        SELECT 
+        SELECT
             r.id,
             r.name,
             r.email,
@@ -250,38 +252,71 @@ def get_all_resume_data():
         ORDER BY r.created_at DESC
         ''')
         return cursor.fetchall()
-    except Exception as e:
-        print(f"Error getting resume data: {str(e)}")
+    except Exception as exc:
+        logger.error("Error getting resume data: %s", exc)
         return []
     finally:
         conn.close()
 
-def verify_admin(email, password):
-    """Verify admin credentials"""
+def _hash_password(password: str) -> str:
+    """Return a bcrypt hash of the given password."""
+    import bcrypt
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def _check_password(password: str, hashed: str) -> bool:
+    """Verify a plain password against a stored bcrypt hash."""
+    import bcrypt
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except Exception:
+        return False
+
+
+def verify_admin(email: str, password: str) -> bool:
+    """Verify admin credentials using bcrypt comparison."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
-        cursor.execute('SELECT * FROM admin WHERE email = ? AND password = ?', (email, password))
-        result = cursor.fetchone()
-        return bool(result)
-    except Exception as e:
-        print(f"Error verifying admin: {str(e)}")
+        cursor.execute('SELECT password FROM admin WHERE email = ?', (email,))
+        row = cursor.fetchone()
+        if not row:
+            return False
+        stored_hash = row[0]
+        # Support both legacy plain-text (length < 60) and bcrypt hashes
+        if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$"):
+            return _check_password(password, stored_hash)
+        # Legacy plain-text: accept but warn
+        if stored_hash == password:
+            logger.warning(
+                "Admin '%s' is using a plain-text password. "
+                "Call add_admin() to reset with a hashed password.", email
+            )
+            return True
+        return False
+    except Exception as exc:
+        logger.error("Error verifying admin: %s", exc)
         return False
     finally:
         conn.close()
 
-def add_admin(email, password):
-    """Add a new admin"""
+
+def add_admin(email: str, password: str) -> bool:
+    """Add (or update) an admin with a bcrypt-hashed password."""
     conn = get_database_connection()
     cursor = conn.cursor()
-    
+
     try:
-        cursor.execute('INSERT INTO admin (email, password) VALUES (?, ?)', (email, password))
+        hashed = _hash_password(password)
+        cursor.execute(
+            'INSERT OR REPLACE INTO admin (email, password) VALUES (?, ?)',
+            (email, hashed)
+        )
         conn.commit()
         return True
-    except Exception as e:
-        print(f"Error adding admin: {str(e)}")
+    except Exception as exc:
+        logger.error("Error adding admin: %s", exc)
         return False
     finally:
         conn.close()

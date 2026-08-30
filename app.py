@@ -13,13 +13,15 @@ st.set_page_config(
 )
 
 import json
+import logging
+import uuid
 import pandas as pd
 import plotly.express as px
 import traceback
 from utils.resume_analyzer import ResumeAnalyzer
 from utils.resume_builder import ResumeBuilder
 from config.database import (
-    get_database_connection, save_resume_data, save_analysis_data, 
+    get_database_connection, save_resume_data, save_analysis_data,
     init_database, verify_admin, log_admin_action
 )
 from config.job_roles import JOB_ROLES
@@ -48,8 +50,12 @@ from PIL import Image
 from utils.groq_analyzer import (
     analyze_with_groq, rewrite_summary_with_groq,
     generate_cover_letter_opener, generate_interview_questions,
-    is_groq_available
+    is_groq_available, match_resume_to_jd
 )
+
+# Configure module-level logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ResumeApp:
     def __init__(self):
@@ -79,11 +85,15 @@ class ResumeApp:
         # Initialize navigation state
         if 'page' not in st.session_state:
             st.session_state.page = 'home'
-            
+
+        # Unique per-session user ID (persists across reruns)
+        if 'user_id' not in st.session_state:
+            st.session_state.user_id = str(uuid.uuid4())
+
         # Initialize admin state
         if 'is_admin' not in st.session_state:
             st.session_state.is_admin = False
-        
+
         self.pages = {
             "🏠 HOME": self.render_home,
             "🔍 RESUME ANALYZER": self.render_analyzer,
@@ -93,39 +103,51 @@ class ResumeApp:
             "💬 FEEDBACK": self.render_feedback_page,
             "ℹ️ ABOUT": self.render_about
         }
-        
+        # Pre-build clean key → display-name map (used in navigation)
+        self._page_key_map = {
+            self._clean_page_key(name): name for name in self.pages
+        }
+
         # Initialize dashboard manager
         self.dashboard_manager = DashboardManager()
-        
+
         self.analyzer = ResumeAnalyzer()
         self.builder = ResumeBuilder()
         self.job_roles = JOB_ROLES
-        
-        # Initialize session state
-        if 'user_id' not in st.session_state:
-            st.session_state.user_id = 'default_user'
+
         if 'selected_role' not in st.session_state:
             st.session_state.selected_role = None
-        
+
         # Initialize database
         init_database()
-        
+
         # Load external CSS
         with open('style/style.css', encoding='utf-8') as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-        
+
         # Load Google Fonts
         st.markdown("""
             <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         """, unsafe_allow_html=True)
 
-    def load_lottie_url(self, url: str):
-        """Load Lottie animation from URL"""
-        r = requests.get(url)
-        if r.status_code != 200:
+    @staticmethod
+    def _clean_page_key(name: str) -> str:
+        """Convert a display page name to a clean session-state key."""
+        import re
+        clean = re.sub(r'[^\w\s]', '', name, flags=re.UNICODE).strip()
+        return re.sub(r'\s+', '_', clean).lower()
+
+    @st.cache_data
+    def load_lottie_url(_self, url: str):
+        """Load Lottie animation from URL (cached to avoid per-rerun HTTP calls)."""
+        try:
+            r = requests.get(url, timeout=5)
+            if r.status_code != 200:
+                return None
+            return r.json()
+        except Exception:
             return None
-        return r.json()
 
     def apply_global_styles(self):
         st.markdown("""
@@ -421,7 +443,7 @@ class ResumeApp:
                 return f"data:image/png;base64,{encoded}"
             except FileNotFoundError:
                 continue
-        print(f"Image not found: {image_name}")
+        logger.warning("Image not found: %s", image_name)
         return None
 
     def export_to_excel(self):
@@ -452,7 +474,7 @@ class ResumeApp:
             
             return output.getvalue()
         except Exception as e:
-            print(f"Error exporting to Excel: {str(e)}")
+            logger.error("Error exporting to Excel: %s", e)
             return None
         finally:
             conn.close()
@@ -477,32 +499,31 @@ class ResumeApp:
         return analytics
 
     def handle_resume_upload(self):
-        """Handle resume upload and analysis"""
+        """Handle resume upload and analysis."""
         uploaded_file = st.file_uploader("Upload your resume", type=['pdf', 'docx'])
-        
+
         if uploaded_file is not None:
+            # Guard against oversized uploads (5 MB limit)
+            if uploaded_file.size > 5 * 1024 * 1024:
+                st.error("\u26a0\ufe0f File too large. Please upload a file under 5 MB.")
+                return False
             try:
-                # Extract text from resume
                 if uploaded_file.type == "application/pdf":
-                    resume_text = extract_text_from_pdf(uploaded_file)
+                    resume_text = self.analyzer.extract_text_from_pdf(uploaded_file)
                 else:
-                    resume_text = extract_text_from_docx(uploaded_file)
-                
-                # Store resume data
+                    resume_text = self.analyzer.extract_text_from_docx(uploaded_file)
+
                 st.session_state.resume_data = {
                     'filename': uploaded_file.name,
                     'content': resume_text,
                     'upload_time': datetime.now().isoformat()
                 }
-                
-                # Analyze resume
-                analytics = self.analyze_resume(resume_text)
-                
                 return True
-            except Exception as e:
-                st.error(f"Error processing resume: {str(e)}")
+            except Exception as exc:
+                st.error(f"Error processing resume: {exc}")
                 return False
         return False
+
 
     def render_builder(self):
         st.title("Resume Builder 📝")
@@ -818,31 +839,23 @@ class ResumeApp:
 
         with col_gen1:
             if st.button("Generate Resume 📄", type="primary"):
-                print("Validating form data...")
-                print(f"Session state form data: {st.session_state.form_data}")
-                print(f"Email input value: {st.session_state.get('email_input', '')}")
-                
                 # Get the current values from form
                 current_name = st.session_state.form_data['personal_info']['full_name'].strip()
                 current_email = st.session_state.email_input if 'email_input' in st.session_state else ''
-                
-                print(f"Current name: {current_name}")
-                print(f"Current email: {current_email}")
-                
+
                 # Validate required fields
                 if not current_name:
                     st.error("⚠️ Please enter your full name.")
                     return
-                
+
                 if not current_email:
                     st.error("⚠️ Please enter your email address.")
                     return
-                    
+
                 # Update email in form data one final time
                 st.session_state.form_data['personal_info']['email'] = current_email
-                
+
                 try:
-                    print("Preparing resume data...")
                     # Prepare resume data with current form values
                     resume_data = {
                         "personal_info": st.session_state.form_data['personal_info'],
@@ -858,18 +871,13 @@ class ResumeApp:
                         }),
                         "template": selected_template
                     }
-                    
-                    print(f"Resume data prepared: {resume_data}")
-                    
+
                     try:
                         # Generate resume
                         resume_buffer = self.builder.generate_resume(resume_data)
                         if resume_buffer:
                             try:
-                                # Save resume data to database
                                 save_resume_data(resume_data)
-                                
-                                # Offer the resume for download
                                 st.success("✅ Resume generated successfully!")
                                 st.download_button(
                                     label="Download Resume 📥",
@@ -878,9 +886,8 @@ class ResumeApp:
                                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                                 )
                             except Exception as db_error:
-                                print(f"Warning: Failed to save to database: {str(db_error)}")
-                                # Still allow download even if database save fails
-                                st.warning("⚠️ Resume generated but couldn't be saved to database")
+                                logger.warning("Failed to save to database: %s", db_error)
+                                st.warning("⚠️ Resume generated but couldn’t be saved to database")
                                 st.download_button(
                                     label="Download Resume 📥",
                                     data=resume_buffer,
@@ -889,16 +896,14 @@ class ResumeApp:
                                 )
                         else:
                             st.error("❌ Failed to generate resume. Please try again.")
-                            print("Resume buffer was None")
                     except Exception as gen_error:
-                        print(f"Error during resume generation: {str(gen_error)}")
-                        print(f"Full traceback: {traceback.format_exc()}")
-                        st.error(f"❌ Error generating resume: {str(gen_error)}")
-                            
-                except Exception as e:
-                    print(f"Error preparing resume data: {str(e)}")
-                    print(f"Full traceback: {traceback.format_exc()}")
-                    st.error(f"❌ Error preparing resume data: {str(e)}")
+                        logger.error("Error during resume generation: %s", traceback.format_exc())
+                        st.error(f"❌ Error generating resume: {gen_error}")
+
+                except Exception as exc:
+                    logger.error("Error preparing resume data: %s", traceback.format_exc())
+                    st.error(f"❌ Error preparing resume data: {exc}")
+
     
     def render_about(self):
         """Render the about page"""
@@ -1150,8 +1155,8 @@ class ResumeApp:
                 'found_skills': groq_result.get('found_keywords', []),
                 'missing_skills': groq_result.get('missing_keywords', [])
             },
-            'section_score': 85,  # Groq handles this; we use a placeholder
-            'format_score': 80,   # Groq handles formatting feedback
+            'section_score': groq_result.get('ai_overall_score', 85),
+            'format_score': int(groq_result.get('keyword_match_percent', 80)),
             'education': education,
             'experience': experience,
             'projects': projects,
@@ -1196,197 +1201,475 @@ class ResumeApp:
             Groq provides fast, high-quality AI analysis powered by their LPU inference engine.
             """)
             return
-        
-        # Job Role Selection
-        categories = list(self.job_roles.keys())
-        selected_category = st.selectbox("Job Category", categories)
-        
-        roles = list(self.job_roles[selected_category].keys())
-        selected_role = st.selectbox("Specific Role", roles)
-        
-        role_info = self.job_roles[selected_category][selected_role]
-        
-        # Display role information
-        skills_html = " ".join(
-            f'<span style="background:rgba(124,92,255,.12);color:#b39dff;border:1px solid rgba(124,92,255,.25);'
-            f'border-radius:50px;padding:3px 12px;font-size:.78rem;font-weight:500;margin:3px;'
-            f'display:inline-block;">{s}</span>'
-            for s in role_info['required_skills']
-        )
-        st.markdown(f"""
-        <div style="background:#161f38;border:1px solid rgba(255,255,255,.08);
-                    border-radius:18px;padding:22px;margin:12px 0;">
-          <div style="font-weight:700;color:#f8fbff;font-family:'Plus Jakarta Sans',sans-serif;
-                      font-size:1rem;margin-bottom:8px;">{selected_role}</div>
-          <p style="color:#98a8c6;font-size:.88rem;margin:0 0 14px;line-height:1.6;">
-            {role_info['description']}
-          </p>
-          <div style="font-size:.75rem;color:#7b87a1;text-transform:uppercase;
-                      letter-spacing:.5px;margin-bottom:8px;">Required Skills</div>
-          <div style="line-height:2.2;">{skills_html}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # File Upload
-        uploaded_file = st.file_uploader("Upload your resume", type=['pdf', 'docx'])
-        
-        st.markdown(
-            self.render_empty_state(
-            "fas fa-cloud-upload-alt",
-            "Upload your resume for Groq AI analysis"
-            ),
-            unsafe_allow_html=True
-        )
-        if uploaded_file:
-            with st.spinner("🤖 Groq is analyzing your resume..."):
-                # ── Extract text ──────────────────────────────────────────
-                text = ""
-                try:
-                    if uploaded_file.type == "application/pdf":
-                        text = self.analyzer.extract_text_from_pdf(uploaded_file)
-                    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-                        text = self.analyzer.extract_text_from_docx(uploaded_file)
-                    else:
-                        text = uploaded_file.getvalue().decode()
-                except Exception as e:
-                    st.error(f"Error reading file: {str(e)}")
-                    return
 
-                if not text or len(text.strip()) < 50:
-                    st.error("Resume text is too short or empty. Please upload a valid resume.")
-                    return
+        # ── Two-tab layout ─────────────────────────────────────────────────
+        tab_role, tab_jd = st.tabs([
+            "🎯  Role-Based Analysis",
+            "📋  Match to Job Description"
+        ])
 
-                # ── Run Groq AI analysis (ONLY) ────────────────────────────
-                groq = analyze_with_groq(text, selected_role, selected_category, role_info.get('required_skills', []))
-                
-                if not groq:
-                    st.error("""
-                    ⚠️ Groq analysis failed. Please check:
-                    - Your API key is valid (in `.env` file as `GROQ_API_KEY`)
-                    - Your Groq account has sufficient credits
-                    - Your internet connection is working
-                    - Try again in a few moments
-                    """)
-                    return
+        # ══════════════════════════════════════════════════════════════════
+        # TAB 1 — Role-Based Analysis (existing flow)
+        # ══════════════════════════════════════════════════════════════════
+        with tab_role:
+            # Job Role Selection
+            categories = list(self.job_roles.keys())
+            selected_category = st.selectbox("Job Category", categories)
+            
+            roles = list(self.job_roles[selected_category].keys())
+            selected_role = st.selectbox("Specific Role", roles)
+            
+            role_info = self.job_roles[selected_category][selected_role]
+            
+            # Display role information
+            skills_html = " ".join(
+                f'<span style="background:rgba(124,92,255,.12);color:#b39dff;border:1px solid rgba(124,92,255,.25);'
+                f'border-radius:50px;padding:3px 12px;font-size:.78rem;font-weight:500;margin:3px;'
+                f'display:inline-block;">{s}</span>'
+                for s in role_info['required_skills']
+            )
+            st.markdown(f"""
+            <div style="background:#161f38;border:1px solid rgba(255,255,255,.08);
+                        border-radius:18px;padding:22px;margin:12px 0;">
+              <div style="font-weight:700;color:#f8fbff;font-family:'Plus Jakarta Sans',sans-serif;
+                          font-size:1rem;margin-bottom:8px;">{selected_role}</div>
+              <p style="color:#98a8c6;font-size:.88rem;margin:0 0 14px;line-height:1.6;">
+                {role_info['description']}
+              </p>
+              <div style="font-size:.75rem;color:#7b87a1;text-transform:uppercase;
+                          letter-spacing:.5px;margin-bottom:8px;">Required Skills</div>
+              <div style="line-height:2.2;">{skills_html}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+            # File Upload with size guard
+            uploaded_file = st.file_uploader("Upload your resume", type=['pdf', 'docx'])
+    
+            if uploaded_file and uploaded_file.size > 5 * 1024 * 1024:
+                st.error("⚠️ File too large. Please upload a file under 5 MB.")
+                return
+    
+            if uploaded_file:
+                with st.spinner("🤖 Groq is analyzing your resume..."):
+                    # ── Extract text ──────────────────────────────────────────
+                    text = ""
+                    try:
+                        if uploaded_file.type == "application/pdf":
+                            text = self.analyzer.extract_text_from_pdf(uploaded_file)
+                        elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                            text = self.analyzer.extract_text_from_docx(uploaded_file)
+                        else:
+                            text = uploaded_file.getvalue().decode()
+                    except Exception as e:
+                        st.error(f"Error reading file: {str(e)}")
+                        return
+    
+                    if not text or len(text.strip()) < 50:
+                        st.error("Resume text is too short or empty. Please upload a valid resume.")
+                        return
+    
+                    # ── Run Groq AI analysis (ONLY) ────────────────────────────
+                    groq = analyze_with_groq(text, selected_role, selected_category, role_info.get('required_skills', []))
+                    
+                    if not groq:
+                        st.error("""
+                        ⚠️ Groq analysis failed. Please check:
+                        - Your API key is valid (in `.env` file as `GROQ_API_KEY`)
+                        - Your Groq account has sufficient credits
+                        - Your internet connection is working
+                        - Try again in a few moments
+                        """)
+                        return
+    
+                    # ── Build analysis from Groq result ────────────────────────
+                    analysis = self.build_groq_only_analysis(
+                        text, selected_role, selected_category, role_info, groq
+                    )
+    
+                    # ── Compute scores from Groq data (no hardcoded placeholders) ─────
+                    ats = groq.get('ai_overall_score', 0)
+                    kw  = int(groq.get('keyword_match_percent', 0))
+                    section_fb = groq.get("section_feedback", {})
+                    _warn_words = {"missing", "add", "improve", "lack", "no ", "without"}
+                    def _score_feedback(fb_text: str) -> int:
+                        return 60 if any(w in fb_text.lower() for w in _warn_words) else 90
+                    fmt = int(
+                        sum(_score_feedback(v) for v in section_fb.values()) / max(len(section_fb), 1)
+                    ) if section_fb else int(kw * 0.8 + 20)
+                    sec = min(100, len(section_fb) * 17) if section_fb else 85
+    
+                    # ── Save to DB with real scores ─────────────────────────────
+                    resume_data = {
+                        'personal_info': {
+                            'name': analysis.get('name', ''), 'email': analysis.get('email', ''),
+                            'phone': analysis.get('phone', ''), 'linkedin': analysis.get('linkedin', ''),
+                            'github': analysis.get('github', ''), 'portfolio': analysis.get('portfolio', '')
+                        },
+                        'summary': analysis.get('summary', ''), 'target_role': selected_role,
+                        'target_category': selected_category, 'education': analysis.get('education', []),
+                        'experience': analysis.get('experience', []), 'projects': analysis.get('projects', []),
+                        'skills': analysis.get('skills', []), 'template': ''
+                    }
+                    try:
+                        resume_id = save_resume_data(resume_data)
+                        save_analysis_data(resume_id, {
+                            'resume_id': resume_id,
+                            'ats_score': analysis['ats_score'],
+                            'keyword_match_score': analysis['keyword_match']['score'],
+                            'format_score': fmt,
+                            'section_score': sec,
+                            'missing_skills': ','.join(analysis['keyword_match']['missing_skills']),
+                            'recommendations': ','.join(analysis['suggestions'][:5])
+                        })
+                    except Exception as exc:
+                        st.warning(f"Note: Could not save to database ({exc}), but analysis is complete.")
+    
+                    # ═══════════════════════════════════════════════════════════
+                    # RESULTS UI — All powered by Groq AI
+                    # ═══════════════════════════════════════════════════════════
+    
+                    # 1. AI Verdict Banner (Groq)
+                    verdict_banner(groq)
+                    st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 2. Score Cards (Groq scores)
+                    score_cards_row(ats, kw, fmt, sec)
+    
+                    st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 3. Strengths & Weaknesses (Groq)
+                    if groq.get("strengths") or groq.get("weaknesses"):
+                        strengths_weaknesses(
+                            groq.get("strengths", []),
+                            groq.get("weaknesses", [])
+                        )
+                        st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 4. Section-by-Section Feedback (Groq)
+                    if groq.get("section_feedback"):
+                        st.markdown("### 📋 Section-by-Section Feedback")
+                        section_feedback_grid(groq["section_feedback"])
+                        st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 5. Keyword Gap Analysis (Groq)
+                    st.markdown("### 🎯 Keyword Analysis")
+                    found_kws = groq.get("found_keywords", [])
+                    miss_kws  = groq.get("missing_keywords", [])
+                    keyword_analysis(found_kws, miss_kws)
+                    st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 6. Bullet Rewrites (Groq)
+                    if groq.get("bullet_rewrites"):
+                        st.markdown("### ✍️ AI Bullet Point Rewrites")
+                        bullet_rewrites(groq["bullet_rewrites"])
+                        st.markdown("<br>", unsafe_allow_html=True)
+    
+                    # 7. ATS Tips (Groq)
+                    if groq.get("ats_tips"):
+                        ats_tips_card(groq["ats_tips"])
+    
+                    # ── 8. Summary Rewrite (Groq) ────────────────────────────
+                    if analysis.get('summary'):
+                        with st.expander("✨ Get AI-Rewritten Professional Summary"):
+                            if st.button("🔄 Rewrite with Groq", key="rewrite_summary_btn"):
+                                with st.spinner("Groq is rewriting your summary..."):
+                                    new_summary = rewrite_summary_with_groq(
+                                        analysis['summary'], selected_role,
+                                        role_info.get('required_skills', [])
+                                    )
+                                if new_summary:
+                                    st.markdown("**Original:**")
+                                    st.info(analysis['summary'])
+                                    st.markdown("**✨ Groq Rewrite:**")
+                                    st.success(new_summary)
+                                    st.caption("Copy and paste this into your resume for better ATS performance.")
+                                else:
+                                    st.warning("Could not generate rewrite. Try again.")
+    
+                    # ── 9. Cover Letter Opener (Groq) ───────────────────────
+                    with st.expander("📨 Generate Cover Letter Opening (Groq)"):
+                        if st.button("Generate Cover Letter Opener", key="cover_letter_btn"):
+                            with st.spinner("Groq is writing your cover letter opener..."):
+                                opener = generate_cover_letter_opener(text, selected_role, selected_category)
+                            if opener:
+                                st.success(opener)
+                                st.caption("Use this as the opening paragraph of your cover letter.")
+                            else:
+                                st.warning("Could not generate opener. Try again.")
+    
+                    # ── 10. Interview Questions (Groq) ───────────────────────
+                    with st.expander("🤖 Generate Interview Questions (Groq)"):
+                        if st.button("Generate Interview Questions", key="interview_questions_btn"):
+                            with st.spinner("Groq is generating tailored interview questions..."):
+                                questions = generate_interview_questions(text, selected_role, selected_category)
+                            if questions:
+                                st.success("Here are some questions you should prepare for:")
+                                st.markdown(questions)
+                            else:
+                                st.warning("Could not generate questions. Try again.")
+    
+    
+    
 
-                # ── Build analysis from Groq result ────────────────────────
-                analysis = self.build_groq_only_analysis(
-                    text, selected_role, selected_category, role_info, groq
+
+        with tab_jd:
+            # ── Intro ──────────────────────────────────────────────────────
+            st.markdown("""
+            <div style="background:linear-gradient(135deg,#0e1726,#111c34);
+                        border:1px solid rgba(108,99,255,0.25);border-radius:20px;
+                        padding:24px 28px;margin:12px 0 20px;">
+              <div style="font-weight:700;color:#8b83ff;font-size:.85rem;
+                          letter-spacing:.4px;margin-bottom:8px;">&#x1F4CB; JOB DESCRIPTION MATCHER</div>
+              <p style="color:#e2e8f0;margin:0;line-height:1.7;font-size:.95rem;">
+                Paste <strong>any job description</strong> to get a real-time match score,
+                identify keyword gaps specific to that posting, and receive
+                <em>tailored</em> rewrite suggestions for that exact role.
+              </p>
+            </div>""", unsafe_allow_html=True)
+
+            # ── Inputs ─────────────────────────────────────────────────────
+            col_l, col_r = st.columns([1, 1], gap="large")
+            with col_l:
+                jd_resume_file = st.file_uploader(
+                    "Upload your resume (PDF or DOCX)",
+                    type=["pdf", "docx"], key="jd_resume_upload"
+                )
+            with col_r:
+                st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+                st.info("Tip: Upload the same resume you intend to submit. Groq will compare every section against the JD.")
+
+            jd_text = st.text_area(
+                "Paste the full Job Description here",
+                height=260,
+                placeholder="Include responsibilities, requirements, and preferred qualifications…",
+                key="jd_text_input"
+            )
+
+            char_count = len(jd_text)
+            if char_count > 0:
+                color = "#22c55e" if char_count >= 200 else "#f59e0b"
+                st.markdown(
+                    f'<div style="text-align:right;font-size:.75rem;color:{color};margin-top:-10px;">'
+                    f'{char_count} chars — {"Ready ✓" if char_count >= 200 else "Add more for better accuracy"}</div>',
+                    unsafe_allow_html=True
                 )
 
-                # ── Save to DB ─────────────────────────────────────────────
-                resume_data = {
-                    'personal_info': {
-                        'name': analysis.get('name', ''), 'email': analysis.get('email', ''),
-                        'phone': analysis.get('phone', ''), 'linkedin': analysis.get('linkedin', ''),
-                        'github': analysis.get('github', ''), 'portfolio': analysis.get('portfolio', '')
-                    },
-                    'summary': analysis.get('summary', ''), 'target_role': selected_role,
-                    'target_category': selected_category, 'education': analysis.get('education', []),
-                    'experience': analysis.get('experience', []), 'projects': analysis.get('projects', []),
-                    'skills': analysis.get('skills', []), 'template': ''
-                }
+            can_run = jd_resume_file is not None and char_count >= 100
+            if st.button("&#x1F50D;  Analyze My Match", type="primary",
+                         disabled=not can_run, use_container_width=True,
+                         key="jd_analyze_btn"):
+                # ── Extract resume text ──────────────────────────────────
                 try:
-                    resume_id = save_resume_data(resume_data)
-                    save_analysis_data(resume_id, {
-                        'resume_id': resume_id, 
-                        'ats_score': analysis['ats_score'],
-                        'keyword_match_score': analysis['keyword_match']['score'],
-                        'format_score': 85,
-                        'section_score': 85,
-                        'missing_skills': ','.join(analysis['keyword_match']['missing_skills']),
-                        'recommendations': ','.join(analysis['suggestions'][:5])  # Save top 5
-                    })
-                except Exception as e:
-                    st.warning(f"Note: Could not save to database ({str(e)}), but analysis is complete.")
+                    if jd_resume_file.type == "application/pdf":
+                        res_txt = self.analyzer.extract_text_from_pdf(jd_resume_file)
+                    else:
+                        res_txt = self.analyzer.extract_text_from_docx(jd_resume_file)
+                except Exception as ex:
+                    st.error(f"Could not read resume: {ex}")
+                    st.stop()
 
-                # ═══════════════════════════════════════════════════════════
-                # RESULTS UI — All powered by Groq AI
-                # ═══════════════════════════════════════════════════════════
+                if not res_txt or len(res_txt.strip()) < 50:
+                    st.error("Resume text too short. Upload a valid resume.")
+                    st.stop()
 
-                # 1. AI Verdict Banner (Groq)
-                verdict_banner(groq)
+                with st.spinner("&#x1F916; Groq is comparing your resume against the JD…"):
+                    jd_result, jd_err = match_resume_to_jd(res_txt, jd_text)
+
+                if not jd_result:
+                    st.error(f"⚠️ Analysis failed: {jd_err}")
+                    st.stop()
+
+                # ── Parse result ─────────────────────────────────────────
+                score   = jd_result.get("overall_match_score", 0)
+                verdict = jd_result.get("match_verdict", "—")
+                summary = jd_result.get("match_summary", "")
+                jd_role = jd_result.get("jd_role_title", "Role")
+                company = jd_result.get("jd_company", "")
+                rec     = jd_result.get("application_recommendation", "—")
+
+                vc = {"Perfect Fit":"#22c55e","Strong Match":"#00d4aa",
+                      "Good Match":"#6c63ff","Partial Match":"#f59e0b",
+                      "Weak Match":"#ef4444"}.get(verdict, "#6c63ff")
+                rc = {"Strong Apply":"#22c55e","Apply":"#00d4aa",
+                      "Apply with Modifications":"#f59e0b",
+                      "Significant Rework Needed":"#ef4444",
+                      "Not Recommended":"#ef4444"}.get(rec, "#94a3b8")
+
+                r = 46; circ = f"{2*3.14159*r:.1f}"
+                offset = f"{2*3.14159*r*(1-score/100):.1f}"
+
+                # ── Verdict banner ───────────────────────────────────────
+                co_str = f" · {company}" if company and company != "Not specified" else ""
+                st.markdown(f"""
+                <div style="background:linear-gradient(135deg,#0e1220,#141929);
+                            border:1px solid {vc}44;border-radius:20px;
+                            padding:28px 32px;margin:20px 0;
+                            box-shadow:0 8px 32px {vc}22;position:relative;overflow:hidden;">
+                  <div style="position:absolute;top:-40%;right:-10%;width:280px;height:280px;
+                              background:radial-gradient(circle,{vc}18 0%,transparent 65%);
+                              pointer-events:none;"></div>
+                  <div style="display:flex;align-items:center;gap:28px;flex-wrap:wrap;position:relative;">
+                    <div style="text-align:center;min-width:120px;">
+                      <svg width="120" height="120" viewBox="0 0 120 120">
+                        <circle cx="60" cy="60" r="{r}" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="8"/>
+                        <circle cx="60" cy="60" r="{r}" fill="none" stroke="{vc}" stroke-width="8"
+                                stroke-linecap="round" stroke-dasharray="{circ}" stroke-dashoffset="{offset}"
+                                transform="rotate(-90 60 60)"/>
+                        <text x="60" y="55" text-anchor="middle" font-family="Plus Jakarta Sans,sans-serif"
+                              font-size="24" font-weight="800" fill="{vc}">{score}</text>
+                        <text x="60" y="72" text-anchor="middle" font-family="Inter,sans-serif"
+                              font-size="9" fill="#64748b">MATCH %</text>
+                      </svg>
+                      <span style="background:{vc};color:#000;font-weight:700;font-size:.7rem;
+                                   border-radius:50px;padding:3px 12px;display:inline-block;">{verdict.upper()}</span>
+                    </div>
+                    <div style="flex:1;min-width:220px;">
+                      <div style="color:#8b83ff;font-weight:600;font-size:.85rem;margin-bottom:6px;">
+                        &#x1F4CB; {jd_role}{co_str}
+                      </div>
+                      <p style="color:#e2e8f0;margin:0 0 14px;line-height:1.7;font-size:.95rem;">{summary}</p>
+                      <div style="display:flex;align-items:center;gap:10px;">
+                        <span style="color:#64748b;font-size:.82rem;">Recommendation:</span>
+                        <span style="color:{rc};font-weight:700;font-size:.85rem;">{rec}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # 2. Score Cards (Groq scores)
-                ats   = groq.get('ai_overall_score', 0)
-                kw    = int(groq.get('keyword_match_percent', 0))
-                fmt   = 85
-                sec   = 85
-                score_cards_row(ats, kw, fmt, sec)
+                # ── Skill gap columns ────────────────────────────────────
+                sk     = jd_result.get("skill_match", {})
+                matched   = sk.get("matched_skills", [])
+                critical  = sk.get("missing_critical_skills", [])
+                nice_have = sk.get("missing_nice_to_have", [])
+                bonus     = sk.get("bonus_skills", [])
+
+                exp_m = jd_result.get("experience_match", {})
+                edu_m = jd_result.get("education_match", {})
+                skill_pct = min(100, int(len(matched)/max(1,len(matched)+len(critical))*100))
+                score_cards_row(score, skill_pct,
+                                exp_m.get("score",0), edu_m.get("score",0))
+                st.markdown("<div style='text-align:center;font-size:.72rem;color:#4a5568;margin-top:4px;'>"
+                            "Overall Match &nbsp;·&nbsp; Skill Match &nbsp;·&nbsp; Experience &nbsp;·&nbsp; Education</div>",
+                            unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("### &#x1F6E0; Skill Gap Analysis")
+                c1, c2 = st.columns(2)
+                with c1:
+                    mt = " ".join(f'<span class="kw-tag-found">&#x2713; {k}</span>' for k in matched) or \
+                         '<span style="color:#64748b;font-size:.85rem;">None detected</span>'
+                    st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(255,255,255,.07);'
+                                f'border-radius:14px;padding:20px;margin-bottom:12px;">'
+                                f'<div style="font-weight:700;color:#22c55e;margin-bottom:10px;font-size:.9rem;">'
+                                f'&#x2713; Matched Skills ({len(matched)})</div>'
+                                f'<div style="line-height:2.2;">{mt}</div></div>', unsafe_allow_html=True)
+                    if bonus:
+                        bt = " ".join(f'<span style="background:rgba(108,99,255,.15);color:#8b83ff;'
+                                      f'border:1px solid rgba(108,99,255,.3);border-radius:50px;'
+                                      f'padding:3px 11px;font-size:.78rem;display:inline-block;margin:2px;">'
+                                      f'&#9733; {k}</span>' for k in bonus)
+                        st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(255,255,255,.07);'
+                                    f'border-radius:14px;padding:20px;">'
+                                    f'<div style="font-weight:700;color:#8b83ff;margin-bottom:10px;font-size:.9rem;">'
+                                    f'&#9733; Bonus Skills ({len(bonus)})</div>'
+                                    f'<div style="line-height:2.2;">{bt}</div></div>', unsafe_allow_html=True)
+                with c2:
+                    if critical:
+                        ct = " ".join(f'<span class="kw-tag-miss">&#x2717; {k}</span>' for k in critical)
+                        st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(239,68,68,.15);'
+                                    f'border-radius:14px;padding:20px;margin-bottom:12px;">'
+                                    f'<div style="font-weight:700;color:#ef4444;margin-bottom:10px;font-size:.9rem;">'
+                                    f'&#x2717; Critical Missing ({len(critical)})</div>'
+                                    f'<div style="line-height:2.2;">{ct}</div></div>', unsafe_allow_html=True)
+                    if nice_have:
+                        nt = " ".join(f'<span style="background:rgba(245,158,11,.1);color:#f59e0b;'
+                                      f'border:1px solid rgba(245,158,11,.25);border-radius:50px;'
+                                      f'padding:3px 11px;font-size:.78rem;display:inline-block;margin:2px;">'
+                                      f'&#9651; {k}</span>' for k in nice_have)
+                        st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(255,255,255,.07);'
+                                    f'border-radius:14px;padding:20px;">'
+                                    f'<div style="font-weight:700;color:#f59e0b;margin-bottom:10px;font-size:.9rem;">'
+                                    f'&#9651; Nice-to-Have Missing ({len(nice_have)})</div>'
+                                    f'<div style="line-height:2.2;">{nt}</div></div>', unsafe_allow_html=True)
+
                 st.markdown("<br>", unsafe_allow_html=True)
 
-                # 3. Strengths & Weaknesses (Groq)
-                if groq.get("strengths") or groq.get("weaknesses"):
-                    strengths_weaknesses(
-                        groq.get("strengths", []),
-                        groq.get("weaknesses", [])
+                # ── Experience / Education feedback ──────────────────────
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(255,255,255,.07);'
+                                f'border-left:3px solid #6c63ff;border-radius:14px;padding:20px;">'
+                                f'<div style="font-weight:700;color:#8b83ff;margin-bottom:8px;font-size:.85rem;">'
+                                f'&#x1F4BC; Experience Alignment</div>'
+                                f'<p style="color:#94a3b8;margin:0;font-size:.88rem;line-height:1.6;">'
+                                f'{exp_m.get("feedback","—")}</p></div>', unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f'<div style="background:#1a2035;border:1px solid rgba(255,255,255,.07);'
+                                f'border-left:3px solid #00d4aa;border-radius:14px;padding:20px;">'
+                                f'<div style="font-weight:700;color:#00d4aa;margin-bottom:8px;font-size:.85rem;">'
+                                f'&#x1F393; Education Alignment</div>'
+                                f'<p style="color:#94a3b8;margin:0;font-size:.88rem;line-height:1.6;">'
+                                f'{edu_m.get("feedback","—")}</p></div>', unsafe_allow_html=True)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── Section gap advice ───────────────────────────────────
+                gaps = jd_result.get("section_gaps", {})
+                if gaps:
+                    st.markdown("### &#x1F4CB; How to Tailor Each Section")
+                    section_feedback_grid(gaps)
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── Tailored bullet rewrites ─────────────────────────────
+                rewrites = jd_result.get("tailored_bullet_rewrites", [])
+                if rewrites:
+                    st.markdown("### &#x270D; JD-Tailored Bullet Rewrites")
+                    bullet_rewrites(rewrites)
+                    st.markdown("<br>", unsafe_allow_html=True)
+
+                # ── Keywords to add ──────────────────────────────────────
+                kw_add = jd_result.get("jd_keywords_to_add", [])
+                if kw_add:
+                    kw_tags = " ".join(
+                        f'<span style="background:rgba(0,212,170,.1);color:#00d4aa;'
+                        f'border:1px solid rgba(0,212,170,.25);border-radius:50px;'
+                        f'padding:4px 13px;font-size:.8rem;display:inline-block;margin:3px;">'
+                        f'+ {k}</span>' for k in kw_add
+                    )
+                    st.markdown(
+                        f'<div style="background:#1a2035;border:1px solid rgba(0,212,170,.15);'
+                        f'border-radius:14px;padding:22px;margin:12px 0;">'
+                        f'<div style="font-weight:700;color:#00d4aa;margin-bottom:12px;font-size:.9rem;">'
+                        f'&#x2795; JD Keywords to Add to Your Resume</div>'
+                        f'<div style="line-height:2.4;">{kw_tags}</div></div>',
+                        unsafe_allow_html=True
                     )
                     st.markdown("<br>", unsafe_allow_html=True)
 
-                # 4. Section-by-Section Feedback (Groq)
-                if groq.get("section_feedback"):
-                    st.markdown("### 📋 Section-by-Section Feedback")
-                    section_feedback_grid(groq["section_feedback"])
-                    st.markdown("<br>", unsafe_allow_html=True)
+                # ── Top 3 action items ───────────────────────────────────
+                actions = jd_result.get("top_3_action_items", [])
+                if actions:
+                    items = "".join(
+                        f'<div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:14px;">'
+                        f'<span style="background:#6c63ff;color:#fff;font-weight:800;font-size:.75rem;'
+                        f'border-radius:50%;width:22px;height:22px;display:flex;align-items:center;'
+                        f'justify-content:center;flex-shrink:0;">{i+1}</span>'
+                        f'<span style="color:#e2e8f0;font-size:.9rem;line-height:1.6;">{a}</span></div>'
+                        for i, a in enumerate(actions)
+                    )
+                    st.markdown(
+                        f'<div style="background:linear-gradient(135deg,#0e1726,#111c34);'
+                        f'border:1px solid rgba(108,99,255,0.3);border-radius:16px;padding:24px;">'
+                        f'<div style="font-weight:700;color:#8b83ff;margin-bottom:16px;'
+                        f'font-family:\'Plus Jakarta Sans\',sans-serif;">'
+                        f'&#x26A1; Top 3 Action Items</div>{items}</div>',
+                        unsafe_allow_html=True
+                    )
 
-                # 5. Keyword Gap Analysis (Groq)
-                st.markdown("### 🎯 Keyword Analysis")
-                found_kws = groq.get("found_keywords", [])
-                miss_kws  = groq.get("missing_keywords", [])
-                keyword_analysis(found_kws, miss_kws)
-                st.markdown("<br>", unsafe_allow_html=True)
-
-                # 6. Bullet Rewrites (Groq)
-                if groq.get("bullet_rewrites"):
-                    st.markdown("### ✍️ AI Bullet Point Rewrites")
-                    bullet_rewrites(groq["bullet_rewrites"])
-                    st.markdown("<br>", unsafe_allow_html=True)
-
-                # 7. ATS Tips (Groq)
-                if groq.get("ats_tips"):
-                    ats_tips_card(groq["ats_tips"])
-
-                # ── 8. Summary Rewrite (Groq) ────────────────────────────
-                if analysis.get('summary'):
-                    with st.expander("✨ Get AI-Rewritten Professional Summary"):
-                        if st.button("🔄 Rewrite with Groq", key="rewrite_summary_btn"):
-                            with st.spinner("Groq is rewriting your summary..."):
-                                new_summary = rewrite_summary_with_groq(
-                                    analysis['summary'], selected_role,
-                                    role_info.get('required_skills', [])
-                                )
-                            if new_summary:
-                                st.markdown("**Original:**")
-                                st.info(analysis['summary'])
-                                st.markdown("**✨ Groq Rewrite:**")
-                                st.success(new_summary)
-                                st.caption("Copy and paste this into your resume for better ATS performance.")
-                            else:
-                                st.warning("Could not generate rewrite. Try again.")
-
-                # ── 9. Cover Letter Opener (Groq) ───────────────────────
-                with st.expander("📨 Generate Cover Letter Opening (Groq)"):
-                    if st.button("Generate Cover Letter Opener", key="cover_letter_btn"):
-                        with st.spinner("Groq is writing your cover letter opener..."):
-                            opener = generate_cover_letter_opener(text, selected_role, selected_category)
-                        if opener:
-                            st.success(opener)
-                            st.caption("Use this as the opening paragraph of your cover letter.")
-                        else:
-                            st.warning("Could not generate opener. Try again.")
-
-                # ── 10. Interview Questions (Groq) ───────────────────────
-                with st.expander("🤖 Generate Interview Questions (Groq)"):
-                    if st.button("Generate Interview Questions", key="interview_questions_btn"):
-                        with st.spinner("Groq is generating tailored interview questions..."):
-                            questions = generate_interview_questions(text, selected_role, selected_category)
-                        if questions:
-                            st.success("Here are some questions you should prepare for:")
-                            st.markdown(questions)
-                        else:
-                            st.warning("Could not generate questions. Try again.")
-
+            elif not can_run:
+                st.caption("Upload your resume and paste a job description (min. 100 chars) to proceed.")
 
 
         # Close the page container
@@ -1468,8 +1751,7 @@ class ResumeApp:
                         help="Click to start analyzing your resume",
                         type="primary",
                         use_container_width=True):
-                cleaned_name = "🔍 RESUME ANALYZER".lower().replace(" ", "_").replace("🔍", "").strip()
-                st.session_state.page = cleaned_name
+                st.session_state.page = self._clean_page_key("🔍 RESUME ANALYZER")
                 st.rerun()
 
     def main(self):
@@ -1574,12 +1856,12 @@ class ResumeApp:
             st.title("Smart Resume AI")
             st.markdown("---")
             
-            # Navigation buttons
+            # Navigation buttons — use pre-built clean key map
             for page_name in self.pages.keys():
                 if st.button(page_name, use_container_width=True):
-                    cleaned_name = page_name.lower().replace(" ", "_").replace("🏠", "").replace("🔍", "").replace("📝", "").replace("📊", "").replace("🎯", "").replace("💬", "").replace("ℹ️", "").strip()
-                    st.session_state.page = cleaned_name
+                    st.session_state.page = self._clean_page_key(page_name)
                     st.rerun()
+
 
             # Add some space before admin login
             st.markdown("<br><br>", unsafe_allow_html=True)
@@ -1602,37 +1884,33 @@ class ResumeApp:
                     admin_email_input = st.text_input("Email", key="admin_email_input")
                     admin_password = st.text_input("Password", type="password", key="admin_password_input")
                     if st.button("Login", key="login_button"):
-                            try:
-                                if verify_admin(admin_email_input, admin_password):
-                                    st.session_state.is_admin = True
-                                    st.session_state.current_admin_email = admin_email_input
-                                    log_admin_action(admin_email_input, "login")
-                                    st.success("Logged in successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error("Invalid credentials")
-                            except Exception as e:
-                                st.error(f"Error during login: {str(e)}")
+                        try:
+                            if verify_admin(admin_email_input, admin_password):
+                                st.session_state.is_admin = True
+                                st.session_state.current_admin_email = admin_email_input
+                                log_admin_action(admin_email_input, "login")
+                                st.success("Logged in successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Invalid credentials")
+                        except Exception as e:
+                            st.error(f"Error during login: {str(e)}")
         
         # Force home page on first load
         if 'initial_load' not in st.session_state:
             st.session_state.initial_load = True
             st.session_state.page = 'home'
             st.rerun()
-        
+
         # Get current page and render it
         current_page = st.session_state.get('page', 'home')
-        
-        # Create a mapping of cleaned page names to original names
-        page_mapping = {name.lower().replace(" ", "_").replace("🏠", "").replace("🔍", "").replace("📝", "").replace("📊", "").replace("🎯", "").replace("💬", "").replace("ℹ️", "").strip(): name 
-                       for name in self.pages.keys()}
-        
-        # Render the appropriate page
-        if current_page in page_mapping:
-            self.pages[page_mapping[current_page]]()
+
+        # Use the pre-built map from __init__ for clean, reliable routing
+        if current_page in self._page_key_map:
+            self.pages[self._page_key_map[current_page]]()
         else:
-            # Default to home page if invalid page
             self.render_home()
+
     
 if __name__ == "__main__":
     app = ResumeApp()

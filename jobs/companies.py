@@ -1,4 +1,5 @@
 """Company data and market insights for job search"""
+from urllib.parse import urlencode, quote_plus
 
 FEATURED_COMPANIES = {
     "tech": [
@@ -168,6 +169,219 @@ def get_featured_companies(category=None):
 def get_market_insights():
     """Get job market insights"""
     return JOB_MARKET_INSIGHTS
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Experience-level mappings  (our range string → each company's param value)
+# ─────────────────────────────────────────────────────────────────────────────
+_EXP_GOOGLE = {          # no native exp filter in URL; append to query
+    "0-1": "entry level", "1-3": "junior", "3-5": "mid level",
+    "5-7": "senior", "7-10": "senior", "10+": "principal staff",
+}
+_EXP_MICROSOFT = {       # &el=
+    "0-1": "Entry+Level", "1-3": "Entry+Level", "3-5": "Mid-Level",
+    "5-7": "Senior", "7-10": "Senior", "10+": "Senior",
+}
+_EXP_AMAZON = {          # &experience_level_key[]=
+    "0-1": "entry_level", "1-3": "entry_level", "3-5": "mid_level",
+    "5-7": "mid_level", "7-10": "senior", "10+": "senior",
+}
+_EXP_META = {            # &career_level=
+    "0-1": "entry", "1-3": "entry", "3-5": "mid",
+    "5-7": "senior", "7-10": "senior", "10+": "director",
+}
+_EXP_IBM = {             # &jobCategory= (appended to keyword)
+    "0-1": "Entry Level", "1-3": "Entry Level", "3-5": "Mid Level",
+    "5-7": "Senior", "7-10": "Senior", "10+": "Executive",
+}
+_EXP_COGNIZANT = {       # &experienceLevel=
+    "0-1": "entry", "1-3": "junior", "3-5": "mid",
+    "5-7": "senior", "7-10": "senior", "10+": "lead",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Date-posted mappings  (our label → each company's param value)
+# ─────────────────────────────────────────────────────────────────────────────
+_DATE_AMAZON = {
+    "Past 24 hours": "last_24_hours", "Past week": "last_7_days",
+    "Past month": "last_30_days",
+}
+_DATE_MICROSOFT = {      # &pg= is page; date uses &d=
+    "Past 24 hours": "1", "Past week": "7", "Past month": "30",
+}
+_DATE_COGNIZANT = {
+    "Past 24 hours": "1", "Past week": "7", "Past month": "30",
+}
+_DATE_WIPRO = {
+    "Past 24 hours": "1", "Past week": "7", "Past month": "30",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job-type mappings
+# ─────────────────────────────────────────────────────────────────────────────
+_JTYPE_AMAZON = {
+    "Full Time": "Full+Time", "Part Time": "Part-Time",
+    "Contract": "Temporary", "Remote": "Temporary",
+}
+_JTYPE_MICROSOFT = {
+    "Full Time": "full_time", "Part Time": "part_time",
+    "Contract": "contract", "Remote": "remote",
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-company URL builders
+# signature: (role, location, experience_id, date_posted, job_type) → URL str
+# All params except role default to "" (meaning "do not filter").
+# ─────────────────────────────────────────────────────────────────────────────
+def _google_url(r, l, exp="", date="", jtype=""):
+    params = {"q": r, "location": l}
+    if exp and exp != "all":
+        params["q"] = f"{r} {_EXP_GOOGLE.get(exp, '')}"
+    return "https://careers.google.com/jobs/results/?" + urlencode(params)
+
+
+def _microsoft_url(r, l, exp="", date="", jtype=""):
+    params = {"q": r, "l": l}
+    if exp and exp != "all":
+        params["el"] = _EXP_MICROSOFT.get(exp, "")
+    if date and date != "Any time":
+        params["d"] = _DATE_MICROSOFT.get(date, "")
+    if jtype and jtype != "All Types":
+        params["et"] = _JTYPE_MICROSOFT.get(jtype, "")
+    return "https://jobs.microsoft.com/en/search?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _amazon_url(r, l, exp="", date="", jtype=""):
+    params = {"base_query": r, "loc_query": l}
+    if exp and exp != "all":
+        params["experience_level_key[]"] = _EXP_AMAZON.get(exp, "")
+    if date and date != "Any time":
+        params["posted_date_filter"] = _DATE_AMAZON.get(date, "")
+    if jtype and jtype not in ("All Types", ""):
+        params["job_type[]"] = _JTYPE_AMAZON.get(jtype, "")
+    return "https://www.amazon.jobs/en/search?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _apple_url(r, l, exp="", date="", jtype=""):
+    q = f"{r} {l}".strip()
+    params = {"q": q}
+    if jtype and jtype == "Remote":
+        params["team"] = "Remote"
+    return "https://jobs.apple.com/en-us/search?" + urlencode(params)
+
+
+def _meta_url(r, l, exp="", date="", jtype=""):
+    params = {"q": r, "offices[0]": l}
+    if exp and exp != "all":
+        params["career_level"] = _EXP_META.get(exp, "")
+    return "https://www.metacareers.com/jobs?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _netflix_url(r, l, exp="", date="", jtype=""):
+    return "https://explore.jobs.netflix.net/careers?" + urlencode({"query": f"{r} {l}".strip()})
+
+
+def _tcs_url(r, l, exp="", date="", jtype=""):
+    params = {"search": r, "location": l}
+    return "https://www.tcs.com/careers/tcs-careers-apply-now?" + urlencode(params)
+
+
+def _infosys_url(r, l, exp="", date="", jtype=""):
+    params = {"jobCategory": r, "location": l}
+    return "https://career.infosys.com/joblist?" + urlencode(params)
+
+
+def _wipro_url(r, l, exp="", date="", jtype=""):
+    params = {"keyword": r, "location": l}
+    if date and date != "Any time":
+        params["postedDate"] = _DATE_WIPRO.get(date, "")
+    if jtype == "Remote":
+        params["workMode"] = "Remote"
+    return "https://careers.wipro.com/careers-home/jobs?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _hcl_url(r, l, exp="", date="", jtype=""):
+    params = {"keyword": r, "location": l}
+    if jtype == "Remote":
+        params["workMode"] = "Remote"
+    return "https://www.hcltech.com/careers/job-search?" + urlencode(params)
+
+
+def _ibm_url(r, l, exp="", date="", jtype=""):
+    keyword = r
+    if exp and exp != "all":
+        keyword = f"{_EXP_IBM.get(exp, '')} {r}".strip()
+    params = {"field_keyword_08": keyword, "field_keyword_18": l}
+    return "https://www.ibm.com/careers/search?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _accenture_url(r, l, exp="", date="", jtype=""):
+    params = {"jk": r, "l": l}
+    if jtype == "Remote":
+        params["workerType"] = "Remote"
+    return "https://www.accenture.com/us-en/careers/jobsearch?" + urlencode({k: v for k, v in params.items() if v})
+
+
+def _cognizant_url(r, l, exp="", date="", jtype=""):
+    params = {"keywords": r, "location": l}
+    if exp and exp != "all":
+        params["experienceLevel"] = _EXP_COGNIZANT.get(exp, "")
+    if date and date != "Any time":
+        params["daysPosted"] = _DATE_COGNIZANT.get(date, "")
+    return "https://careers.cognizant.com/global/en/search-results?" + urlencode({k: v for k, v in params.items() if v})
+
+
+_CAREER_URL_BUILDERS = {
+    "Google": _google_url,
+    "Microsoft": _microsoft_url,
+    "Amazon": _amazon_url,
+    "Apple": _apple_url,
+    "Facebook": _meta_url,
+    "Netflix": _netflix_url,
+    "TCS": _tcs_url,
+    "Infosys": _infosys_url,
+    "Wipro": _wipro_url,
+    "HCL": _hcl_url,
+    "IBM": _ibm_url,
+    "Accenture": _accenture_url,
+    "Cognizant": _cognizant_url,
+}
+
+
+def build_smart_career_url(
+    company_name: str,
+    role: str,
+    location: str = "",
+    experience: str = "",
+    date_posted: str = "",
+    job_type: str = "",
+) -> str:
+    """Return a pre-filtered career page URL for the given company and filters.
+
+    Args:
+        company_name: Exact name matching FEATURED_COMPANIES.
+        role:         Job title / skill keyword.
+        location:     City or region.
+        experience:   One of the experience range IDs ("0-1", "1-3", "3-5", etc.) or "all".
+        date_posted:  "Any time", "Past 24 hours", "Past week", "Past month".
+        job_type:     "Full Time", "Part Time", "Contract", "Remote" or "All Types".
+
+    Returns:
+        A URL string (may be pre-filtered or the base careers URL as fallback).
+    """
+    role = role.strip()
+    location = location.strip()
+
+    builder = _CAREER_URL_BUILDERS.get(company_name)
+    if builder and role:
+        try:
+            return builder(role, location, experience, date_posted, job_type)
+        except Exception:
+            pass  # fall through to base URL
+
+    company = get_company_info(company_name)
+    return company["careers_url"] if company else "#"
+
 
 def get_company_info(company_name):
     """Get company information by name"""
