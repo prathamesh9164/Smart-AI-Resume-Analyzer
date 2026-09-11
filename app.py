@@ -42,7 +42,7 @@ from ui_components import (
     render_suggestions_section,
     groq_badge, verdict_banner, score_cards_row,
     strengths_weaknesses, section_feedback_grid, keyword_analysis,
-    bullet_rewrites, ats_tips_card, course_card
+    bullet_rewrites, ats_tips_card, course_card, chat_context_card
 )
 from datetime import datetime
 from jobs.job_search import render_job_search
@@ -50,8 +50,11 @@ from PIL import Image
 from utils.groq_analyzer import (
     analyze_with_groq, rewrite_summary_with_groq,
     generate_cover_letter_opener, generate_interview_questions,
-    is_groq_available, match_resume_to_jd
+    is_groq_available, match_resume_to_jd,
+    stream_chat_with_resume_context, chat_with_resume_context,
+    get_groq_models, get_default_groq_model, parse_resume_with_groq
 )
+from utils.pdf_report import generate_ai_report
 
 # Configure module-level logger
 logging.basicConfig(level=logging.INFO)
@@ -98,7 +101,6 @@ class ResumeApp:
             "🏠 HOME": self.render_home,
             "🔍 RESUME ANALYZER": self.render_analyzer,
             "📝 RESUME BUILDER": self.render_builder,
-            "📊 DASHBOARD": self.render_dashboard,
             "🎯 JOB SEARCH": self.render_job_search,
             "💬 FEEDBACK": self.render_feedback_page,
             "ℹ️ ABOUT": self.render_about
@@ -1067,16 +1069,16 @@ class ResumeApp:
                      alt="Tabarak Mukhtar" 
                      class="profile-image"
                      onerror="this.onerror=null; this.src='https://github.com/tabarakmukhtar.png';">
-                <h2 class="profile-name">Tabarak Mukhtar </h2>
-                <p class="profile-title">Full Stack Developer & DevOps Enthusiast</p>
+                <h2 class="profile-name">Prathamesh Talele </h2>
+                <p class="profile-title">Data Analyst & Full Stack Developer</p>
                 <div class="social-links">
-                    <a href="https://github.com/tabarakmukhtar" class="social-link" target="_blank">
+                    <a href="https://github.com/prathamesh9164" class="social-link" target="_blank">
                         <i class="fab fa-github"></i>
                     </a>
-                    <a href="https://www.linkedin.com/in/tabarakmukhtar/" class="social-link" target="_blank">
+                    <a href="https://www.linkedin.com/in/prathameshtalele" class="social-link" target="_blank">
                         <i class="fab fa-linkedin"></i>
                     </a>
-                    <a href="mailto:tabarakmukhtar159@gmail.com" class="social-link" target="_blank">
+                    <a href="mailto:prathameshtalele17@gmail.com" class="social-link" target="_blank">
                         <i class="fas fa-envelope"></i>
                     </a>
                 </div>
@@ -1135,15 +1137,25 @@ class ResumeApp:
             </div>
         """, unsafe_allow_html=True)
     
-    def build_groq_only_analysis(self, resume_text, selected_role, selected_category, role_info, groq_result):
-        """Build analysis structure from Groq result and basic extraction."""
-        # Extract basic sections (no scoring)
-        personal_info = self.analyzer.extract_personal_info(resume_text)
-        education = self.analyzer.extract_education(resume_text)
-        experience = self.analyzer.extract_experience(resume_text)
-        projects = self.analyzer.extract_projects(resume_text)
-        skills = self.analyzer.extract_skills(resume_text)
-        summary = self.analyzer.extract_summary(resume_text)
+    def build_groq_only_analysis(
+        self, resume_text, selected_role, selected_category, role_info,
+        groq_result, structured_resume=None
+    ):
+        """Build analysis from Groq feedback with structured extraction fallback."""
+        fallback_personal_info = self.analyzer.extract_personal_info(resume_text)
+        fallback_education = self.analyzer.extract_education(resume_text)
+        fallback_experience = self.analyzer.extract_experience(resume_text)
+        fallback_projects = self.analyzer.extract_projects(resume_text)
+        fallback_skills = self.analyzer.extract_skills(resume_text)
+        fallback_summary = self.analyzer.extract_summary(resume_text)
+
+        profile = structured_resume if isinstance(structured_resume, dict) else {}
+        personal_info = profile.get("personal_info") or fallback_personal_info
+        education = profile.get("education") or fallback_education
+        experience = profile.get("experience") or fallback_experience
+        projects = profile.get("projects") or fallback_projects
+        skills = profile.get("skills") or fallback_skills
+        summary = profile.get("summary") or fallback_summary
         
         # Use Groq's scores and feedback as the main analysis
         return {
@@ -1169,6 +1181,7 @@ class ResumeApp:
             'experience_suggestions': [],
             'education_suggestions': [],
             'format_suggestions': groq_result.get('recommended_additions', []),
+            'structured_resume': profile,
             'groq_result': groq_result  # Keep full Groq response for UI
         }
 
@@ -1202,10 +1215,21 @@ class ResumeApp:
             """)
             return
 
-        # ── Two-tab layout ─────────────────────────────────────────────────
-        tab_role, tab_jd = st.tabs([
+        model_options = list(get_groq_models())
+        default_model = get_default_groq_model()
+        selected_model = st.selectbox(
+            "AI model",
+            model_options,
+            index=model_options.index(default_model) if default_model in model_options else 0,
+            help="Choose which Groq model should process analysis and generated content.",
+        )
+        st.caption(f"Active model: `{selected_model}`")
+
+        # ── Three-tab layout ────────────────────────────────────────────────
+        tab_role, tab_jd, tab_chat = st.tabs([
             "🎯  Role-Based Analysis",
-            "📋  Match to Job Description"
+            "📋  Match to Job Description",
+            "💬  Conversational AI Chat"
         ])
 
         # ══════════════════════════════════════════════════════════════════
@@ -1269,7 +1293,10 @@ class ResumeApp:
                         return
     
                     # ── Run Groq AI analysis (ONLY) ────────────────────────────
-                    groq = analyze_with_groq(text, selected_role, selected_category, role_info.get('required_skills', []))
+                    groq = analyze_with_groq(
+                        text, selected_role, selected_category,
+                        role_info.get('required_skills', []), model=selected_model
+                    )
                     
                     if not groq:
                         st.error("""
@@ -1281,9 +1308,14 @@ class ResumeApp:
                         """)
                         return
     
+
+                    structured_resume = parse_resume_with_groq(
+                        text, model=selected_model
+                    ) or {}
                     # ── Build analysis from Groq result ────────────────────────
                     analysis = self.build_groq_only_analysis(
-                        text, selected_role, selected_category, role_info, groq
+                        text, selected_role, selected_category, role_info, groq,
+                        structured_resume=structured_resume,
                     )
     
                     # ── Compute scores from Groq data (no hardcoded placeholders) ─────
@@ -1324,6 +1356,15 @@ class ResumeApp:
                     except Exception as exc:
                         st.warning(f"Note: Could not save to database ({exc}), but analysis is complete.")
     
+                    # ── Save active resume memory context for RAG Chat ─────────
+                    st.session_state.active_resume_text = text
+                    st.session_state.active_resume_role = selected_role
+                    st.session_state.active_resume_category = selected_category
+                    st.session_state.active_analysis_info = groq
+                    st.session_state.active_structured_resume = structured_resume
+                    st.session_state.active_resume_filename = uploaded_file.name
+                    st.session_state.active_jd_text = ""
+    
                     # ═══════════════════════════════════════════════════════════
                     # RESULTS UI — All powered by Groq AI
                     # ═══════════════════════════════════════════════════════════
@@ -1331,9 +1372,83 @@ class ResumeApp:
                     # 1. AI Verdict Banner (Groq)
                     verdict_banner(groq)
                     st.markdown("<br>", unsafe_allow_html=True)
+
+                    if structured_resume:
+                        with st.expander("View structured resume profile"):
+                            st.json(structured_resume)
+                    else:
+                        st.info("Structured extraction was unavailable; regex-based resume parsing was used.")
     
                     # 2. Score Cards (Groq scores)
                     score_cards_row(ats, kw, fmt, sec)
+
+                    with st.expander("Compare this analysis with another model"):
+                        comparison_options = [
+                            model for model in model_options if model != selected_model
+                        ]
+                        if comparison_options:
+                            comparison_model = st.selectbox(
+                                "Comparison model",
+                                comparison_options,
+                                key="analysis_comparison_model",
+                            )
+                            if st.button(
+                                "Run comparison",
+                                key="run_analysis_comparison",
+                                type="secondary",
+                            ):
+                                with st.spinner(f"Comparing with {comparison_model}..."):
+                                    comparison = analyze_with_groq(
+                                        text, selected_role, selected_category,
+                                        role_info.get('required_skills', []),
+                                        model=comparison_model,
+                                    )
+                                if comparison:
+                                    comparison_columns = st.columns(2)
+                                    for column, model_name, result in zip(
+                                        comparison_columns,
+                                        [selected_model, comparison_model],
+                                        [groq, comparison],
+                                    ):
+                                        with column:
+                                            st.markdown(f"**{model_name}**")
+                                            st.metric(
+                                                "AI score",
+                                                f"{result.get('ai_overall_score', 0)}/100",
+                                            )
+                                            st.write(
+                                                f"**Verdict:** {result.get('ai_verdict', '—')}"
+                                            )
+                                            st.write(result.get('ai_summary', ''))
+                                else:
+                                    st.warning(
+                                        f"{comparison_model} did not return a valid analysis."
+                                    )
+                        else:
+                            st.info("Add another model to GROQ_MODELS to compare outputs.")
+
+                    try:
+                        report_data = {**groq, "ats_score": ats}
+                        report_file = generate_ai_report(
+                            report_data,
+                            role=selected_role,
+                            filename=uploaded_file.name,
+                        )
+                        report_name = uploaded_file.name.rsplit('.', 1)[0]
+                        report_name = ''.join(
+                            character if character.isalnum() or character in '-_' else '_'
+                            for character in report_name
+                        )
+                        st.download_button(
+                            "Download AI PDF Report",
+                            data=report_file.getvalue(),
+                            file_name=f"{report_name}_ai_report.pdf",
+                            mime="application/pdf",
+                            key="ai_pdf_report_download",
+                        )
+                    except Exception as report_error:
+                        logger.exception("Failed to generate AI PDF report")
+                        st.warning(f"Could not generate the PDF report: {report_error}")
     
                     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -1375,7 +1490,8 @@ class ResumeApp:
                                 with st.spinner("Groq is rewriting your summary..."):
                                     new_summary = rewrite_summary_with_groq(
                                         analysis['summary'], selected_role,
-                                        role_info.get('required_skills', [])
+                                        role_info.get('required_skills', []),
+                                        model=selected_model
                                     )
                                 if new_summary:
                                     st.markdown("**Original:**")
@@ -1390,23 +1506,27 @@ class ResumeApp:
                     with st.expander("📨 Generate Cover Letter Opening (Groq)"):
                         if st.button("Generate Cover Letter Opener", key="cover_letter_btn"):
                             with st.spinner("Groq is writing your cover letter opener..."):
-                                opener = generate_cover_letter_opener(text, selected_role, selected_category)
+                                opener = generate_cover_letter_opener(
+                                    text, selected_role, selected_category, model=selected_model
+                                )
                             if opener:
                                 st.success(opener)
                                 st.caption("Use this as the opening paragraph of your cover letter.")
                             else:
                                 st.warning("Could not generate opener. Try again.")
     
-                    # ── 10. Interview Questions (Groq) ───────────────────────
-                    with st.expander("🤖 Generate Interview Questions (Groq)"):
-                        if st.button("Generate Interview Questions", key="interview_questions_btn"):
-                            with st.spinner("Groq is generating tailored interview questions..."):
-                                questions = generate_interview_questions(text, selected_role, selected_category)
+                    # ── 10. Interview Questions Bank (Groq) ──────────────────
+                    with st.expander("🤖 Generate Full Interview Question Bank (15-20 Questions)"):
+                        if st.button("Generate Master Interview Question Bank", key="interview_questions_btn"):
+                            with st.spinner("Groq is generating a comprehensive master bank of 15-20 categorized interview questions..."):
+                                questions = generate_interview_questions(
+                                    text, selected_role, selected_category, model=selected_model
+                                )
                             if questions:
-                                st.success("Here are some questions you should prepare for:")
+                                st.success("🎯 Master Interview Preparation Bank (15-20 Categorized Questions + Answer Tips):")
                                 st.markdown(questions)
                             else:
-                                st.warning("Could not generate questions. Try again.")
+                                st.warning("Could not generate question bank. Try again.")
     
     
     
@@ -1473,11 +1593,20 @@ class ResumeApp:
                     st.stop()
 
                 with st.spinner("&#x1F916; Groq is comparing your resume against the JD…"):
-                    jd_result, jd_err = match_resume_to_jd(res_txt, jd_text)
+                    jd_result, jd_err = match_resume_to_jd(
+                        res_txt, jd_text, model=selected_model
+                    )
 
                 if not jd_result:
                     st.error(f"⚠️ Analysis failed: {jd_err}")
                     st.stop()
+
+                # ── Save active resume memory context for RAG Chat ─────────
+                st.session_state.active_resume_text = res_txt
+                st.session_state.active_resume_role = jd_result.get("jd_role_title", "Target Role")
+                st.session_state.active_jd_text = jd_text
+                st.session_state.active_analysis_info = jd_result
+                st.session_state.active_resume_filename = jd_resume_file.name
 
                 # ── Parse result ─────────────────────────────────────────
                 score   = jd_result.get("overall_match_score", 0)
@@ -1671,6 +1800,141 @@ class ResumeApp:
             elif not can_run:
                 st.caption("Upload your resume and paste a job description (min. 100 chars) to proceed.")
 
+        # ══════════════════════════════════════════════════════════════════
+        # TAB 3 — Conversational AI Chat (Resume Memory / RAG)
+        # ══════════════════════════════════════════════════════════════════
+        with tab_chat:
+            st.markdown("""
+            <div style="background:linear-gradient(135deg,#0e1726,#111c34);
+                        border:1px solid rgba(108,99,255,0.25);border-radius:20px;
+                        padding:24px 28px;margin:12px 0 20px;">
+              <div style="font-weight:700;color:#8b83ff;font-size:.85rem;
+                          letter-spacing:.4px;margin-bottom:8px;">💬 CONVERSATIONAL AI RESUME ASSISTANT (RAG MEMORY)</div>
+              <p style="color:#e2e8f0;margin:0;line-height:1.7;font-size:.95rem;">
+                Have a multi-turn conversation with your <strong>Groq AI Career Coach</strong>. Ask follow-up questions, request customized bullet rewrites, prepare for technical interview questions, or ask for targeted career advice — all backed by your active resume memory.
+              </p>
+            </div>""", unsafe_allow_html=True)
+
+            # Active Resume Memory Context Section
+            active_text = st.session_state.get('active_resume_text')
+            active_role = st.session_state.get('active_resume_role', '')
+            active_info = st.session_state.get('active_analysis_info', {})
+            active_name = st.session_state.get('active_resume_filename', 'Uploaded_Resume.pdf')
+            active_jd   = st.session_state.get('active_jd_text', '')
+
+            if active_text and len(active_text.strip()) > 30:
+                ats_val = None
+                if isinstance(active_info, dict):
+                    ats_val = active_info.get("ai_overall_score") or active_info.get("overall_match_score") or active_info.get("ats_score")
+                
+                chat_context_card(
+                    resume_name=active_name,
+                    role=active_role or "General",
+                    score=ats_val,
+                    word_count=len(active_text.split()),
+                    has_jd=bool(active_jd)
+                )
+            else:
+                st.markdown("""
+                <div style="background:#161f38;border:1px dashed rgba(108,99,255,0.4);border-radius:16px;padding:20px;margin-bottom:20px;">
+                  <div style="font-weight:600;color:#f8fbff;font-size:.92rem;margin-bottom:6px;">
+                    ⚠️ No Resume Context Currently Active
+                  </div>
+                  <p style="color:#94a3b8;font-size:.85rem;margin:0 0 12px;">
+                    Upload your resume below to activate RAG memory context, or ask general career questions right away.
+                  </p>
+                </div>""", unsafe_allow_html=True)
+                
+                chat_upload = st.file_uploader("Upload Resume (PDF or DOCX) to activate AI memory", type=["pdf", "docx"], key="chat_tab_uploader")
+                if chat_upload:
+                    try:
+                        if chat_upload.type == "application/pdf":
+                            u_text = self.analyzer.extract_text_from_pdf(chat_upload)
+                        else:
+                            u_text = self.analyzer.extract_text_from_docx(chat_upload)
+                        
+                        if u_text and len(u_text.strip()) > 50:
+                            st.session_state.active_resume_text = u_text
+                            st.session_state.active_resume_filename = chat_upload.name
+                            st.success(f"✅ Resume '{chat_upload.name}' loaded into AI memory!")
+                            st.rerun()
+                        else:
+                            st.error("Uploaded resume text is too short.")
+                    except Exception as ex:
+                        st.error(f"Could not read resume: {ex}")
+
+            # Quick Question Chips / Prompts
+            st.markdown("<div style='font-size:.82rem;color:#94a3b8;font-weight:600;margin-bottom:8px;'>⚡ QUICK PROMPTS / ONE-CLICK QUESTIONS:</div>", unsafe_allow_html=True)
+            
+            col_p1, col_p2, col_p3 = st.columns(3)
+            pending_prompt = None
+
+            with col_p1:
+                if st.button("✍️ Rewrite Experience Bullets", use_container_width=True, key="btn_chip_1"):
+                    pending_prompt = "Can you analyze my Work Experience section and rewrite 3 of my weakest bullet points to make them more impactful with quantifiable achievements?"
+                if st.button("🏆 Highlight Strengths & Red Flags", use_container_width=True, key="btn_chip_2"):
+                    pending_prompt = "What are the top 3 strengths of my resume, and what are 2 potential red flags recruiters might notice?"
+
+            with col_p2:
+                if st.button("🎯 Keyword & ATS Optimization", use_container_width=True, key="btn_chip_3"):
+                    pending_prompt = "What critical technical skills or industry keywords am I missing for my target role, and where should I add them?"
+                if st.button("👔 Prepare 'Tell Me About Yourself'", use_container_width=True, key="btn_chip_4"):
+                    pending_prompt = "Based on my resume, help me craft a compelling 60-second response to 'Tell me about yourself' for interviews."
+
+            with col_p3:
+                if st.button("📝 Tailored Executive Summary", use_container_width=True, key="btn_chip_5"):
+                    pending_prompt = "Write a high-impact, 3-sentence professional summary for the top of my resume tailored to my target role."
+                if st.button("❓ Full Interview Question Bank", use_container_width=True, key="btn_chip_6"):
+                    pending_prompt = "Based on my resume and target role, generate a comprehensive master bank of 15-20 technical, project deep-dive, behavioral, and role-specific interview questions along with preparation tips for each."
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Chat Session State & Header Controls
+            if "chat_history" not in st.session_state:
+                st.session_state.chat_history = []
+
+            c_left, c_right = st.columns([4, 1])
+            with c_right:
+                if st.button("🗑️ Clear Chat", use_container_width=True, key="clear_chat_btn"):
+                    st.session_state.chat_history = []
+                    st.rerun()
+
+            # Render Message History
+            for message in st.session_state.chat_history:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            # Handle Chat Input or Quick Prompt
+            user_prompt = st.chat_input("Ask your Groq AI Resume Coach a question...")
+            if pending_prompt and not user_prompt:
+                user_prompt = pending_prompt
+
+            if user_prompt:
+                # Display user input
+                with st.chat_message("user"):
+                    st.markdown(user_prompt)
+                st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+
+                # Display assistant streaming response
+                with st.chat_message("assistant"):
+                    cur_text = st.session_state.get('active_resume_text', '')
+                    cur_role = st.session_state.get('active_resume_role', '')
+                    cur_cat  = st.session_state.get('active_resume_category', '')
+                    cur_info = st.session_state.get('active_analysis_info', {})
+                    cur_jd   = st.session_state.get('active_jd_text', '')
+
+                    stream_gen = stream_chat_with_resume_context(
+                        messages=st.session_state.chat_history,
+                        resume_text=cur_text,
+                        role=cur_role,
+                        category=cur_cat,
+                        analysis_info=cur_info,
+                        jd_text=cur_jd,
+                        model=selected_model,
+                    )
+                    full_response = st.write_stream(stream_gen)
+                
+                st.session_state.chat_history.append({"role": "assistant", "content": full_response})
 
         # Close the page container
         st.markdown('</div>', unsafe_allow_html=True)
@@ -1715,14 +1979,120 @@ class ResumeApp:
     def render_home(self):
         apply_modern_styles()
         
-        # Hero Section
+        # ── Upper Top Navigation Bar (All Navigation Buttons) ──────────────
+        nav_cols = st.columns(6)
+        with nav_cols[0]:
+            if st.button("🏠 Home", key="top_nav_home", use_container_width=True):
+                st.session_state.page = self._clean_page_key("🏠 HOME")
+                st.rerun()
+        with nav_cols[1]:
+            if st.button("🔍 Analyzer", key="top_nav_analyzer", use_container_width=True):
+                st.session_state.page = self._clean_page_key("🔍 RESUME ANALYZER")
+                st.rerun()
+        with nav_cols[2]:
+            if st.button("📝 Builder", key="top_nav_builder", use_container_width=True):
+                st.session_state.page = self._clean_page_key("📝 RESUME BUILDER")
+                st.rerun()
+        with nav_cols[3]:
+            if st.button("🎯 Job Search", key="top_nav_job_search", use_container_width=True):
+                st.session_state.page = self._clean_page_key("🎯 JOB SEARCH")
+                st.rerun()
+        with nav_cols[4]:
+            if st.button("💬 Feedback", key="top_nav_feedback", use_container_width=True):
+                st.session_state.page = self._clean_page_key("💬 FEEDBACK")
+                st.rerun()
+        with nav_cols[5]:
+            if st.button("ℹ️ About", key="top_nav_about", use_container_width=True):
+                st.session_state.page = self._clean_page_key("ℹ️ ABOUT")
+                st.rerun()
+
+        # ── Hero Section ───────────────────────────────────────────────────
         hero_section(
             "Smart Resume AI",
             "Transform your career with AI-powered resume analysis and building. Get personalized insights and create professional resumes that stand out."
         )
         
-        # Features Section
-        st.markdown('<div class="feature-grid">', unsafe_allow_html=True)
+        # ── Large Stylish Horizontal Navigation Buttons ───────────────────
+        st.markdown("<h3 style='text-align:center;color:#f8fbff;margin:28px 0 20px;font-family:\"Plus Jakarta Sans\",sans-serif;font-weight:700;'>🚀 Quick Access Tools</h3>", unsafe_allow_html=True)
+
+        st.markdown("""
+        <style>
+        .nav-card-box {
+            background: linear-gradient(145deg, #10172a, #1a233b);
+            border: 1px solid rgba(124, 92, 255, 0.28);
+            border-radius: 22px;
+            padding: 26px 22px;
+            text-align: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+            margin-bottom: 12px;
+        }
+        .nav-card-box:hover {
+            transform: translateY(-6px);
+            border-color: #00d4aa;
+            box-shadow: 0 18px 40px rgba(108, 99, 255, 0.3);
+        }
+        .nav-card-icon-lg {
+            font-size: 2.8rem;
+            margin-bottom: 12px;
+        }
+        .nav-card-title-lg {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #f8fbff;
+            margin-bottom: 8px;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+        .nav-card-desc-lg {
+            font-size: 0.86rem;
+            color: #94a3b8;
+            line-height: 1.5;
+            min-height: 48px;
+            margin-bottom: 16px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        n_col1, n_col2, n_col3 = st.columns(3)
+
+        with n_col1:
+            st.markdown("""
+            <div class="nav-card-box">
+                <div class="nav-card-icon-lg">🔍</div>
+                <div class="nav-card-title-lg">Resume Analyzer</div>
+                <div class="nav-card-desc-lg">AI ATS scoring, job description matching, keyword analysis, and RAG career coach chat.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Launch Analyzer 🚀", key="home_nav_analyzer", use_container_width=True, type="primary"):
+                st.session_state.page = self._clean_page_key("🔍 RESUME ANALYZER")
+                st.rerun()
+
+        with n_col2:
+            st.markdown("""
+            <div class="nav-card-box">
+                <div class="nav-card-icon-lg">📝</div>
+                <div class="nav-card-title-lg">Resume Builder</div>
+                <div class="nav-card-desc-lg">Create ATS-optimized professional resumes with intelligent Groq AI bullet and summary suggestions.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Build Resume ✍️", key="home_nav_builder", use_container_width=True, type="primary"):
+                st.session_state.page = self._clean_page_key("📝 RESUME BUILDER")
+                st.rerun()
+
+        with n_col3:
+            st.markdown("""
+            <div class="nav-card-box">
+                <div class="nav-card-icon-lg">🎯</div>
+                <div class="nav-card-title-lg">Smart Job Search</div>
+                <div class="nav-card-desc-lg">Discover curated jobs pre-filtered by role, experience level, and market demand insights.</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Search Jobs 💼", key="home_nav_jobs", use_container_width=True, type="primary"):
+                st.session_state.page = self._clean_page_key("🎯 JOB SEARCH")
+                st.rerun()
+
+        # Features Overview Section
+        st.markdown('<div class="feature-grid" style="margin-top:36px;">', unsafe_allow_html=True)
         
         feature_card(
             "fas fa-robot",
@@ -1743,134 +2113,16 @@ class ResumeApp:
         )
         
         st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Admin Portal Section (Moved from Sidebar Drawer) ──────────────
+        st.markdown("<br><hr style='border-color:rgba(255,255,255,0.08);'>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align:center;color:#f8fbff;margin:24px 0 14px;font-family:\"Plus Jakarta Sans\",sans-serif;font-weight:700;'>👤 Administrator Portal</h3>", unsafe_allow_html=True)
         
-        # Call-to-Action with Streamlit navigation
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            if st.button("Get Started", key="get_started_btn", 
-                        help="Click to start analyzing your resume",
-                        type="primary",
-                        use_container_width=True):
-                st.session_state.page = self._clean_page_key("🔍 RESUME ANALYZER")
-                st.rerun()
-
-    def main(self):
-        """Main application entry point"""
-        self.apply_global_styles()
-
-        # ── Floating sidebar toggle button ─────────────────────────────────
-        st.markdown("""
-        <style>
-        /* Hide the default Streamlit sidebar collapse arrow */
-        [data-testid="collapsedControl"] { display: none !important; }
-        button[kind="header"]            { display: none !important; }
-
-        /* Floating menu button */
-        #sidebar-toggle-btn {
-          position: fixed;
-          top: 16px;
-          left: 16px;
-          z-index: 99999;
-          width: 44px;
-          height: 44px;
-          border-radius: 12px;
-          background: linear-gradient(135deg, #6c63ff, #5046e5);
-          border: none;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 4px 16px rgba(108,99,255,0.45);
-          transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
-        }
-        #sidebar-toggle-btn:hover {
-          transform: scale(1.08);
-          box-shadow: 0 8px 24px rgba(108,99,255,0.65);
-        }
-        #sidebar-toggle-btn svg {
-          width: 20px; height: 20px;
-          stroke: #fff; fill: none;
-          stroke-width: 2; stroke-linecap: round;
-          transition: all 0.25s ease;
-        }
-        /* Tooltip */
-        #sidebar-toggle-btn::after {
-          content: "Menu";
-          position: absolute;
-          left: 54px;
-          top: 50%;
-          transform: translateY(-50%);
-          background: #1a2035;
-          color: #f1f5f9;
-          font-size: 12px;
-          font-weight: 600;
-          padding: 4px 10px;
-          border-radius: 6px;
-          white-space: nowrap;
-          opacity: 0;
-          pointer-events: none;
-          transition: opacity 0.2s ease;
-          font-family: 'Inter', sans-serif;
-          border: 1px solid rgba(255,255,255,0.1);
-        }
-        #sidebar-toggle-btn:hover::after { opacity: 1; }
-        </style>
-
-        <button id="sidebar-toggle-btn" title="Toggle menu" onclick="toggleSidebar()">
-          <svg viewBox="0 0 24 24">
-            <line x1="3" y1="6"  x2="21" y2="6" />
-            <line x1="3" y1="12" x2="21" y2="12"/>
-            <line x1="3" y1="18" x2="21" y2="18"/>
-          </svg>
-        </button>
-
-        <script>
-        function toggleSidebar() {
-          // Find and click Streamlit's internal sidebar toggle
-          const sidebarBtn = window.parent.document.querySelector(
-            '[data-testid="collapsedControl"]'
-          );
-          if (sidebarBtn) {
-            sidebarBtn.click();
-            return;
-          }
-          // Fallback: toggle the sidebar section directly
-          const sidebar = window.parent.document.querySelector(
-            '[data-testid="stSidebar"]'
-          );
-          if (sidebar) {
-            const isVisible = sidebar.style.display !== "none" &&
-                              sidebar.offsetWidth > 0;
-            sidebar.style.transition = "transform 0.3s ease";
-            sidebar.style.transform  = isVisible
-              ? "translateX(-110%)"
-              : "translateX(0)";
-          }
-        }
-        </script>
-        """, unsafe_allow_html=True)
-        
-        # Admin login/logout in sidebar
-        with st.sidebar:
-            st_lottie(self.load_lottie_url("https://assets5.lottiefiles.com/packages/lf20_xyadoh9h.json"), height=200, key="sidebar_animation")
-            st.title("Smart Resume AI")
-            st.markdown("---")
-            
-            # Navigation buttons — use pre-built clean key map
-            for page_name in self.pages.keys():
-                if st.button(page_name, use_container_width=True):
-                    st.session_state.page = self._clean_page_key(page_name)
-                    st.rerun()
-
-
-            # Add some space before admin login
-            st.markdown("<br><br>", unsafe_allow_html=True)
-            st.markdown("---")
-            
-            # Admin Login/Logout section at bottom
+        admin_c1, admin_c2, admin_c3 = st.columns([1, 2, 1])
+        with admin_c2:
             if st.session_state.get('is_admin', False):
-                st.success(f"Logged in as: {st.session_state.get('current_admin_email')}")
-                if st.button("Logout", key="logout_button"):
+                st.success(f"✅ Logged in as Administrator: **{st.session_state.get('current_admin_email')}**")
+                if st.button("Logout from Admin", key="home_logout_button", use_container_width=True, type="primary"):
                     try:
                         log_admin_action(st.session_state.get('current_admin_email'), "logout")
                         st.session_state.is_admin = False
@@ -1880,10 +2132,10 @@ class ResumeApp:
                     except Exception as e:
                         st.error(f"Error during logout: {str(e)}")
             else:
-                with st.expander("👤 Admin Login"):
-                    admin_email_input = st.text_input("Email", key="admin_email_input")
-                    admin_password = st.text_input("Password", type="password", key="admin_password_input")
-                    if st.button("Login", key="login_button"):
+                with st.expander("🔐 Admin Login Portal", expanded=False):
+                    admin_email_input = st.text_input("Admin Email", key="home_admin_email_input")
+                    admin_password = st.text_input("Admin Password", type="password", key="home_admin_password_input")
+                    if st.button("Login as Admin", key="home_login_button", use_container_width=True, type="primary"):
                         try:
                             if verify_admin(admin_email_input, admin_password):
                                 st.session_state.is_admin = True
@@ -1892,9 +2144,58 @@ class ResumeApp:
                                 st.success("Logged in successfully!")
                                 st.rerun()
                             else:
-                                st.error("Invalid credentials")
+                                st.error("Invalid admin credentials")
                         except Exception as e:
                             st.error(f"Error during login: {str(e)}")
+
+    def render_top_header(self):
+        """Render top navigation header bar with Back to Home button for non-home pages."""
+        current_page = st.session_state.get('page', 'home')
+        home_key = self._clean_page_key("🏠 HOME")
+        
+        # If on a non-home page, display top header with Back to Home button
+        if current_page != 'home' and current_page != home_key:
+            c_back, c_nav = st.columns([1.4, 5])
+            with c_back:
+                if st.button("⬅️ Back to Home", key="hdr_back_to_home_btn", use_container_width=True, type="primary"):
+                    st.session_state.page = home_key
+                    st.rerun()
+            with c_nav:
+                nav_cols = st.columns(5)
+                pages_info = [
+                    ("🔍 Analyzer", "🔍 RESUME ANALYZER"),
+                    ("📝 Builder", "📝 RESUME BUILDER"),
+                    ("🎯 Job Search", "🎯 JOB SEARCH"),
+                    ("💬 Feedback", "💬 FEEDBACK"),
+                    ("ℹ️ About", "ℹ️ ABOUT")
+                ]
+                for idx, (label, name) in enumerate(pages_info):
+                    clean_k = self._clean_page_key(name)
+                    is_active = (current_page == clean_k)
+                    with nav_cols[idx]:
+                        if st.button(
+                            label,
+                            key=f"hdr_nav_{idx}",
+                            use_container_width=True,
+                            type="primary" if is_active else "secondary"
+                        ):
+                            st.session_state.page = clean_k
+                            st.rerun()
+            st.markdown("<hr style='margin:12px 0 24px;border-color:rgba(255,255,255,0.08);'>", unsafe_allow_html=True)
+
+    def main(self):
+        """Main application entry point"""
+        self.apply_global_styles()
+
+        # ── Hide Sidebar Drawer ──────────────────────────────────────────────
+        st.markdown("""
+        <style>
+        /* Completely hide Streamlit sidebar drawer & controls */
+        [data-testid="stSidebar"] { display: none !important; }
+        [data-testid="collapsedControl"] { display: none !important; }
+        button[kind="header"] { display: none !important; }
+        </style>
+        """, unsafe_allow_html=True)
         
         # Force home page on first load
         if 'initial_load' not in st.session_state:
@@ -1902,8 +2203,9 @@ class ResumeApp:
             st.session_state.page = 'home'
             st.rerun()
 
-        # Get current page and render it
+        # Get current page and render top header + page
         current_page = st.session_state.get('page', 'home')
+        self.render_top_header()
 
         # Use the pre-built map from __init__ for clean, reliable routing
         if current_page in self._page_key_map:

@@ -436,3 +436,36 @@ def render_suggestions_section(resume_uploaded=False):
       </div>
       {body}
     </div>""", unsafe_allow_html=True)
+
+
+def chat_context_card(resume_name: str, role: str = "", score: int = None, word_count: int = 0, has_jd: bool = False):
+    """Render active RAG resume context badge for the conversational AI chat."""
+    role_str = f" &nbsp;·&nbsp; Target Role: <strong style='color:#8b83ff;'>{role}</strong>" if role else ""
+    score_str = f" &nbsp;·&nbsp; ATS Score: <strong style='color:#22c55e;'>{score}%</strong>" if score is not None else ""
+    words_str = f" ({word_count} words)" if word_count > 0 else ""
+    jd_str = " &nbsp;·&nbsp; <span style='color:#00d4aa;font-weight:600;'>+ JD Matched</span>" if has_jd else ""
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#0e1726,#111c34);
+                border:1px solid rgba(108,99,255,0.3);border-radius:16px;
+                padding:16px 22px;margin:8px 0 20px;display:flex;align-items:center;
+                justify-content:space-between;flex-wrap:wrap;gap:12px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:1.4rem;">🧠</span>
+        <div>
+          <div style="color:#8b83ff;font-weight:700;font-size:.78rem;letter-spacing:.5px;text-transform:uppercase;">
+            RAG ACTIVE MEMORY &mdash; RESUME CONTEXT LOADED
+          </div>
+          <div style="color:#e2e8f0;font-size:.9rem;margin-top:2px;">
+            📄 <strong>{resume_name}</strong>{words_str}{role_str}{score_str}{jd_str}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.3);
+                     border-radius:50px;padding:3px 12px;font-size:.72rem;font-weight:700;">
+          CONTEXT ACTIVE
+        </span>
+      </div>
+    </div>""", unsafe_allow_html=True)
+

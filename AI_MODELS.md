@@ -34,9 +34,18 @@ To use these AI models, you need to set up API keys in your `.env` file:
 ```
 # API Keys for AI Models
 GROQ_API_KEY=your_groq_api_key_here
+
+# Optional: model used by default when the app starts
+GROQ_MODEL=qwen/qwen3.8-27b
+
+# Optional: comma-separated model IDs shown in the app's model selector
+GROQ_MODELS=qwen/qwen3.8-27b,llama-3.3-70b-versatile,llama-3.1-8b-instant,meta-llama/llama-4-scout-17b-16e-instruct
 ```
 
 - For Groq, you need an API key from [Groq Console](https://console.groq.com)
+- The **AI model** selector on the Resume Analyzer page controls analysis, JD matching, generated content, and chat.
+- Use **Compare this analysis with another model** below a role-based analysis to compare scores and summaries.
+- Model IDs must be enabled for your Groq account. You can override the displayed list with `GROQ_MODELS`.
 
 ## Privacy and Data Handling
 

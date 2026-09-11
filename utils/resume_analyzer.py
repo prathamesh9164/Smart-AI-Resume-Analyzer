@@ -1,5 +1,60 @@
 import re
 
+
+class SemanticSkillMatcher:
+    """Match skills by meaning when sentence-transformers is available."""
+
+    _aliases = {
+        "machinelearning": ("machine learning", "ml"),
+        "reactjs": ("react.js", "reactjs"),
+        "generativeai": ("generative ai", "genai"),
+    }
+    _model = None
+    _model_load_attempted = False
+
+    @classmethod
+    def _get_model(cls):
+        if cls._model_load_attempted:
+            return cls._model
+
+        cls._model_load_attempted = True
+        try:
+            from sentence_transformers import SentenceTransformer
+            cls._model = SentenceTransformer("all-MiniLM-L6-v2")
+        except Exception:
+            cls._model = None
+        return cls._model
+
+    @classmethod
+    def find_matches(cls, resume_text, required_skills, threshold=0.62):
+        model = cls._get_model()
+        if model is None:
+            return set()
+
+        resume_units = [
+            sentence.strip()
+            for sentence in re.split(r"[\n.!?]+", resume_text)
+            if sentence.strip()
+        ]
+        if not resume_units:
+            return set()
+
+        skill_embeddings = model.encode(required_skills, normalize_embeddings=True)
+        resume_embeddings = model.encode(resume_units, normalize_embeddings=True)
+        matches = set()
+
+        for index, skill in enumerate(required_skills):
+            similarities = resume_embeddings @ skill_embeddings[index]
+            if max(similarities) >= threshold:
+                matches.add(skill)
+        return matches
+
+    @classmethod
+    def has_alias_match(cls, resume_text, skill):
+        normalized_skill = re.sub(r"[^a-z0-9]", "", skill.lower())
+        aliases = cls._aliases.get(normalized_skill, ())
+        return any(alias in resume_text for alias in aliases)
+
 class ResumeAnalyzer:
     def __init__(self):
         # Document type indicators
@@ -43,6 +98,11 @@ class ResumeAnalyzer:
         resume_text = resume_text.lower()
         found_skills = []
         missing_skills = []
+
+        required_skills = list(dict.fromkeys(required_skills or []))
+        semantic_matches = SemanticSkillMatcher.find_matches(
+            resume_text, required_skills
+        )
         
         for skill in required_skills:
             skill_lower = skill.lower()
@@ -51,6 +111,10 @@ class ResumeAnalyzer:
                 found_skills.append(skill)
             # Check for partial matches (e.g., "Python" in "Python programming")
             elif any(skill_lower in phrase for phrase in resume_text.split('.')):
+                found_skills.append(skill)
+            elif SemanticSkillMatcher.has_alias_match(resume_text, skill):
+                found_skills.append(skill)
+            elif skill in semantic_matches:
                 found_skills.append(skill)
             else:
                 missing_skills.append(skill)

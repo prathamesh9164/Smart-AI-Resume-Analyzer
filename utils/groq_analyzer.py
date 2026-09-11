@@ -16,6 +16,25 @@ _GROQ_AVAILABLE = False
 _client = None
 # Read model from env; default to a known-good Groq model
 _MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+_MODEL_OPTIONS = tuple(dict.fromkeys(
+    model.strip()
+    for model in os.getenv(
+        "GROQ_MODELS",
+        f"{_MODEL},llama-3.3-70b-versatile,llama-3.1-8b-instant,"
+        "meta-llama/llama-4-scout-17b-16e-instruct"
+    ).split(",")
+    if model.strip()
+))
+
+
+def get_groq_models() -> tuple:
+    """Return model IDs available to the UI, preserving environment order."""
+    return _MODEL_OPTIONS
+
+
+def get_default_groq_model() -> str:
+    """Return the deployment-configured model used when no model is selected."""
+    return _MODEL
 
 
 def _init_groq():
@@ -102,6 +121,35 @@ Return a valid JSON object with EXACTLY this structure (raw JSON only, no markdo
   "keyword_match_percent": <integer 0-100>
 }}"""
 
+_STRUCTURED_RESUME_PROMPT = """You are a precise resume parsing system. Extract only information explicitly present in the resume below.
+
+RESUME TEXT:
+\"\"\"{resume_text}\"\"\"
+
+Return valid JSON only, with exactly this structure. Use empty strings or empty arrays when a value is not present. Never invent employers, dates, achievements, skills, contact details, or education.
+{{
+    "personal_info": {{
+        "name": "",
+        "email": "",
+        "phone": "",
+        "location": "",
+        "linkedin": "",
+        "github": "",
+        "portfolio": ""
+    }},
+    "summary": "",
+    "education": [
+        {{"institution": "", "degree": "", "field": "", "start_date": "", "end_date": "", "details": ""}}
+    ],
+    "experience": [
+        {{"company": "", "title": "", "location": "", "start_date": "", "end_date": "", "description": "", "achievements": []}}
+    ],
+    "skills": [],
+    "projects": [
+        {{"name": "", "description": "", "technologies": [], "url": ""}}
+    ]
+}}"""
+
 _SUMMARY_REWRITE_PROMPT = """You are an expert resume writer. Rewrite the following professional summary to be more impactful, keyword-rich, and tailored for the role of {role}.
 
 CURRENT SUMMARY: {summary}
@@ -117,12 +165,32 @@ RESUME HIGHLIGHTS:
 
 Return ONLY the opening paragraph, nothing else. Make it genuine and impactful."""
 
-_INTERVIEW_QUESTIONS_PROMPT = """You are an expert technical recruiter and hiring manager. Based on the candidate's resume and the target role of {role} in the {category} domain, generate 8 highly relevant interview questions (a mix of behavioral and technical).
+_INTERVIEW_QUESTIONS_PROMPT = """You are an expert senior technical recruiter and hiring manager at a top company. 
 
-RESUME HIGHLIGHTS:
-{resume_text}
+Based on the candidate's resume and target role of **{role}** in the **{category}** domain, generate a COMPREHENSIVE MASTER BANK of 15 to 20 highly relevant, realistic, and challenging interview questions.
 
-Return ONLY a numbered list of the questions, nothing else. Make them realistic and challenging."""
+RESUME TEXT:
+\"\"\"{resume_text}\"\"\"
+
+Organize the questions into the following categories using clean Markdown formatting:
+
+### 🛠️ 1. Technical & Tool Deep Dives (5-6 Questions)
+(Questions targeting the programming languages, frameworks, tools, and technical skills listed on their resume)
+
+### 🚀 2. Project & Work Experience Deep Dives (4-5 Questions)
+(Questions asking about specific accomplishments, architectural choices, metrics, and technical challenges from their work experience/projects)
+
+### 🎯 3. Role-Specific & Situational Questions (3-4 Questions)
+(Scenario-based questions tailored specifically for a {role})
+
+### 🤝 4. Behavioral & STAR Method Questions (3-4 Questions)
+(Questions evaluating soft skills, conflict resolution, teamwork, failure recovery, and problem-solving)
+
+For EACH question, provide:
+- **Question**: Clear and specific question text.
+- 💡 **Interviewer Insight & Prep Tip**: What hiring managers evaluate and key talking points to include in a winning response.
+
+Return a complete, detailed Markdown guide. Do not truncate."""
 
 _BUILDER_SUMMARY_PROMPT = """You are an expert resume writer. Generate a powerful professional summary (3-4 sentences) for the candidate.
 
@@ -202,13 +270,18 @@ Perform a thorough comparison and return a valid JSON object with EXACTLY this s
 }}"""
 
 
-def _create_response(prompt: str, temperature: float, max_output_tokens: int):
+def _create_response(
+    prompt: str,
+    temperature: float,
+    max_output_tokens: int,
+    model: str = None,
+):
     """Send a prompt to Groq and return (text, None) on success, (None, error_str) on failure."""
     if not _init_groq():
         return None, "Groq client not initialised. Check GROQ_API_KEY in .env"
     try:
         response = _client.chat.completions.create(
-            model=_MODEL,
+            model=model or _MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             max_tokens=max_output_tokens
@@ -219,7 +292,93 @@ def _create_response(prompt: str, temperature: float, max_output_tokens: int):
         return None, str(exc)
 
 
-def analyze_with_groq(resume_text: str, role: str, category: str, required_skills: list):
+def _parse_json_response(raw: str):
+    """Parse raw model output that may be wrapped in a Markdown code fence."""
+    if not raw:
+        return None
+    clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+    clean = re.sub(r"\s*```$", "", clean, flags=re.MULTILINE).strip()
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", clean, re.DOTALL)
+        if not match:
+            return None
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            return None
+
+
+def parse_resume_with_groq(resume_text: str, model: str = None):
+    """Extract a normalized structured resume profile, or return None on failure."""
+    if not _init_groq() or not resume_text or len(resume_text.strip()) < 50:
+        return None
+
+    prompt = _STRUCTURED_RESUME_PROMPT.format(resume_text=resume_text[:10000])
+    raw, _ = _create_response(prompt, 0.0, 2500, model=model)
+    parsed = _parse_json_response(raw)
+    if not isinstance(parsed, dict):
+        logger.warning("Groq structured resume extraction returned invalid JSON")
+        return None
+
+    personal_info = parsed.get("personal_info")
+    if not isinstance(personal_info, dict):
+        personal_info = {}
+
+    def clean_string(value):
+        return value.strip() if isinstance(value, str) else ""
+
+    def clean_list(value):
+        if not isinstance(value, list):
+            return []
+        return [clean_string(item) for item in value if isinstance(item, str) and item.strip()]
+
+    def clean_records(value, fields):
+        if not isinstance(value, list):
+            return []
+        records = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            record = {
+                field: clean_list(item.get(field))
+                if field in ("achievements", "technologies")
+                else clean_string(item.get(field))
+                for field in fields
+            }
+            if any(record.values()):
+                records.append(record)
+        return records
+
+    return {
+        "personal_info": {
+            field: clean_string(personal_info.get(field))
+            for field in ("name", "email", "phone", "location", "linkedin", "github", "portfolio")
+        },
+        "summary": clean_string(parsed.get("summary")),
+        "education": clean_records(
+            parsed.get("education"),
+            ("institution", "degree", "field", "start_date", "end_date", "details"),
+        ),
+        "experience": clean_records(
+            parsed.get("experience"),
+            ("company", "title", "location", "start_date", "end_date", "description", "achievements"),
+        ),
+        "skills": clean_list(parsed.get("skills")),
+        "projects": clean_records(
+            parsed.get("projects"), ("name", "description", "technologies", "url")
+        ),
+    }
+
+
+def analyze_with_groq(
+    resume_text: str,
+    role: str,
+    category: str,
+    required_skills: list,
+    model: str = None,
+):
     """Run full Groq analysis on a resume."""
     if not _init_groq():
         return None
@@ -230,7 +389,7 @@ def analyze_with_groq(resume_text: str, role: str, category: str, required_skill
         resume_text=resume_text[:8000],
         required_skills=", ".join(required_skills)
     )
-    raw, err = _create_response(prompt, 0.3, 2048)
+    raw, err = _create_response(prompt, 0.3, 2048, model=model)
     if not raw:
         return None
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
@@ -247,7 +406,9 @@ def analyze_with_groq(resume_text: str, role: str, category: str, required_skill
         return None
 
 
-def rewrite_summary_with_groq(summary: str, role: str, required_skills: list):
+def rewrite_summary_with_groq(
+    summary: str, role: str, required_skills: list, model: str = None
+):
     """Ask Groq to rewrite a professional summary. Returns new text or None."""
     if not _init_groq() or not summary or len(summary.strip()) < 20:
         return None
@@ -257,11 +418,13 @@ def rewrite_summary_with_groq(summary: str, role: str, required_skills: list):
         summary=summary[:1000],
         required_skills=", ".join(required_skills[:10])
     )
-    text, _ = _create_response(prompt, 0.5, 256)
+    text, _ = _create_response(prompt, 0.5, 256, model=model)
     return text
 
 
-def generate_cover_letter_opener(resume_text: str, role: str, category: str):
+def generate_cover_letter_opener(
+    resume_text: str, role: str, category: str, model: str = None
+):
     """Generate a cover letter opening paragraph using Groq."""
     if not _init_groq():
         return None
@@ -271,21 +434,23 @@ def generate_cover_letter_opener(resume_text: str, role: str, category: str):
         category=category,
         resume_text=resume_text[:3000]
     )
-    text, _ = _create_response(prompt, 0.6, 200)
+    text, _ = _create_response(prompt, 0.6, 200, model=model)
     return text
 
 
-def generate_interview_questions(resume_text: str, role: str, category: str):
-    """Generate role-specific mock interview questions using Groq."""
+def generate_interview_questions(
+    resume_text: str, role: str, category: str, model: str = None
+):
+    """Generate role-specific mock interview question bank using Groq."""
     if not _init_groq():
         return None
 
     prompt = _INTERVIEW_QUESTIONS_PROMPT.format(
         role=role,
         category=category,
-        resume_text=resume_text[:3000]
+        resume_text=resume_text[:4000]
     )
-    text, _ = _create_response(prompt, 0.6, 500)
+    text, _ = _create_response(prompt, 0.6, 2500, model=model)
     return text
 
 
@@ -354,7 +519,7 @@ def generate_full_cover_letter(personal_info: dict, experiences: list, skills: d
 
 
 
-def match_resume_to_jd(resume_text: str, jd_text: str):
+def match_resume_to_jd(resume_text: str, jd_text: str, model: str = None):
     """Deep JD-vs-resume match analysis using Groq.
     Returns (result_dict, None) on success, (None, error_str) on failure.
     """
@@ -369,7 +534,7 @@ def match_resume_to_jd(resume_text: str, jd_text: str):
         jd_text=jd_text[:4000]
     )
     # 4096 tokens — the JSON output is large; 2048 caused mid-response truncation
-    raw, api_err = _create_response(prompt, 0.2, 4096)
+    raw, api_err = _create_response(prompt, 0.2, 4096, model=model)
     if not raw:
         return None, api_err or "Groq API returned an empty response."
 
@@ -385,9 +550,119 @@ def match_resume_to_jd(resume_text: str, jd_text: str):
         except Exception:
             pass
         logger.error("JD match JSON parse failed. Raw reply (first 500 chars): %s", raw[:500])
-        return None, f"Groq replied but the JSON was malformed. Model used: {_MODEL}. First 200 chars of reply: {raw[:200]}"
+        return None, f"Groq replied but the JSON was malformed. Model used: {model or _MODEL}. First 200 chars of reply: {raw[:200]}"
 
 
 def is_groq_available() -> bool:
     """Check if Groq is configured and ready."""
     return _init_groq()
+
+
+def stream_chat_with_resume_context(
+    messages: list,
+    resume_text: str = "",
+    role: str = "",
+    category: str = "",
+    analysis_info: dict = None,
+    jd_text: str = "",
+    model: str = None,
+):
+    """
+    Stream chunks of response text from Groq for a conversational chat with resume memory/RAG.
+    `messages` should be a list of dicts: [{'role': 'user'|'assistant', 'content': '...'}]
+    """
+    if not _init_groq():
+        yield "⚠️ Groq client is not initialised. Please check `GROQ_API_KEY` in `.env`."
+        return
+
+    system_content = (
+        "You are an expert AI Resume Coach, Senior Hiring Manager, and Career Mentor with 15+ years of experience.\n"
+        "Your goal is to help the candidate elevate their resume, optimize for ATS filters, prepare for interviews, "
+        "and land their dream job offer.\n\n"
+    )
+
+    if resume_text and len(resume_text.strip()) > 30:
+        system_content += "=== ACTIVE RESUME CONTEXT (RAG MEMORY) ===\n"
+        if role:
+            system_content += f"Target Role: {role}\n"
+        if category:
+            system_content += f"Target Category: {category}\n"
+        
+        if analysis_info and isinstance(analysis_info, dict):
+            ats = analysis_info.get("ai_overall_score") or analysis_info.get("overall_match_score") or analysis_info.get("ats_score")
+            if ats:
+                system_content += f"Latest ATS/Match Score: {ats}/100\n"
+            
+            verdict = analysis_info.get("ai_verdict") or analysis_info.get("match_verdict")
+            if verdict:
+                system_content += f"Analysis Verdict: {verdict}\n"
+            
+            summary = analysis_info.get("ai_summary") or analysis_info.get("match_summary")
+            if summary:
+                system_content += f"Analysis Summary: {summary}\n"
+            
+            strengths = analysis_info.get("strengths")
+            if strengths:
+                system_content += f"Identified Strengths: {', '.join(strengths[:5])}\n"
+            
+            weaknesses = analysis_info.get("weaknesses")
+            if weaknesses:
+                system_content += f"Areas for Improvement: {', '.join(weaknesses[:5])}\n"
+            
+            missing = analysis_info.get("missing_keywords")
+            if missing:
+                system_content += f"Missing Keywords: {', '.join(missing[:8])}\n"
+        
+        if jd_text:
+            system_content += f"\nTARGET JOB DESCRIPTION (JD):\n\"\"\"{jd_text[:3000]}\"\"\"\n"
+
+        system_content += f"\nFULL CANDIDATE RESUME TEXT:\n\"\"\"{resume_text[:6000]}\"\"\"\n"
+        system_content += "========================================\n\n"
+        system_content += (
+            "INSTRUCTIONS FOR RESPONDING:\n"
+            "- Refer directly to specific achievements, roles, tools, and sections from the candidate's resume.\n"
+            "- When asked to rewrite bullets or sections, provide concrete, high-impact rewrites with quantifiable metrics where possible.\n"
+            "- Be concise, encouraging, professional, and actionable.\n"
+            "- Use clean Markdown formatting (bold key points, bullet lists, code blocks for text rewrites).\n"
+        )
+    else:
+        system_content += (
+            "NOTE: No resume context is currently uploaded. Provide general expert resume & career advice, "
+            "and encourage the user to upload their resume in the Context panel above for tailored assistance."
+        )
+
+    api_messages = [{"role": "system", "content": system_content}]
+    for msg in messages:
+        api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+    try:
+        response = _client.chat.completions.create(
+            model=model or _MODEL,
+            messages=api_messages,
+            temperature=0.6,
+            max_tokens=1500,
+            stream=True
+        )
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as exc:
+        logger.error("Groq chat streaming failed: %s", exc)
+        yield f"⚠️ Error communicating with Groq: {str(exc)}"
+
+
+def chat_with_resume_context(
+    messages: list,
+    resume_text: str = "",
+    role: str = "",
+    category: str = "",
+    analysis_info: dict = None,
+    jd_text: str = "",
+    model: str = None,
+) -> str:
+    """Non-streaming helper function returning complete chat response string."""
+    chunks = list(stream_chat_with_resume_context(
+        messages, resume_text, role, category, analysis_info, jd_text, model
+    ))
+    return "".join(chunks)
+

@@ -55,96 +55,61 @@ def render_company_section(
     date_posted: str = "",
     job_type: str = "",
 ):
-    """Render the featured companies section with pre-filtered career links."""
+    """Render a ranked company radar with pre-filtered career links."""
     st.markdown("""
         <style>
-        .company-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 1rem;
-            padding: 1rem 0;
-        }
-        .company-card {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            padding: 1rem;
-            transition: transform 0.2s;
-            cursor: pointer;
-        }
-        .company-card:hover {
-            transform: translateY(-5px);
-            background: rgba(255, 255, 255, 0.08);
-        }
-        .company-header {
-            display: flex;
-            align-items: center;
-            margin-bottom: 0.5rem;
-        }
-        .company-icon {
-            font-size: 1.5rem;
-            margin-right: 0.5rem;
-        }
-        .company-categories {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin-top: 0.5rem;
-        }
-        .company-category {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 0.2rem 0.5rem;
-            border-radius: 15px;
-            font-size: 0.8rem;
-        }
+        .radar-card { background: rgba(255,255,255,.05); border: 1px solid rgba(0,191,165,.16);
+            border-radius: 14px; padding: 1rem; min-height: 205px; }
+        .radar-card h3 { margin: 0; font-size: 1.05rem; }
+        .radar-meta { color: #94a3b8; font-size: .8rem; line-height: 1.5; }
+        .radar-signal { color: #00e0b0; font-weight: 700; font-size: .78rem; }
         </style>
     """, unsafe_allow_html=True)
 
-    # Featured Companies
-    st.markdown("### 🏢 Featured Companies")
-    
-    tabs = st.tabs(["All Companies", "Tech Giants", "Indian Tech", "Global Corps"])
-    
-    categories = [None, "tech", "indian_tech", "global_corps"]
-    for tab, category in zip(tabs, categories):
-        with tab:
-            companies = get_featured_companies(category)
-            st.markdown('<div class="company-grid">', unsafe_allow_html=True)
-            
-            for company in companies:
-                    smart_url = build_smart_career_url(
-                        company['name'],
-                        role=job_query,
-                        location=location,
-                        experience=experience,
-                        date_posted=date_posted,
-                        job_type=job_type,
-                    )
-                    # Build a human-readable filter badge
-                    badge_parts = []
-                    if job_query:    badge_parts.append(f"🔍 {job_query}")
-                    if location:     badge_parts.append(f"📍 {location}")
-                    if experience and experience not in ("all", ""): badge_parts.append(f"🎓 {experience} yrs")
-                    if date_posted and date_posted != "Any time":     badge_parts.append(f"🕐 {date_posted}")
-                    if job_type and job_type not in ("All Types", ""): badge_parts.append(f"💼 {job_type}")
-                    filter_badge = "  ·  ".join(badge_parts)
+    st.markdown("### 🛰️ Company Radar")
+    if job_query:
+        st.caption(
+            f"Prioritized employers for **{job_query}**. Each launch opens the company's own careers search with your filters applied."
+        )
+    else:
+        st.caption("Enter a role above to rank employers by fit and generate targeted career searches.")
 
-                    st.markdown(f"""
-                        <a href="{smart_url}" target="_blank" style="text-decoration: none; color: inherit;">
-                            <div class="company-card">
-                                <div class="company-header">
-                                    <i class="{company['icon']} company-icon" style="color: {company['color']}"></i>
-                                    <h3 style="margin: 0;">{company['name']}</h3>
-                                </div>
-                                <p style="margin: 0.5rem 0; color: #888;">{company['description']}</p>
-                                <div class="company-categories">
-                                    {' '.join(f'<span class="company-category">{cat}</span>' for cat in company['categories'])}
-                                </div>
-                                {f'<p style="margin:0.5rem 0 0;font-size:0.73rem;color:#00bfa5;line-height:1.6;">{filter_badge}</p>' if filter_badge else ''}
-                            </div>
-                        </a>
-                    """, unsafe_allow_html=True)
-            
-            st.markdown('</div>', unsafe_allow_html=True)
+    query_terms = {term.lower() for term in job_query.replace("/", " ").split() if len(term) > 2}
+    ranked_companies = []
+    for company in get_featured_companies():
+        category_terms = {
+            term.lower() for category in company["categories"]
+            for term in category.replace("/", " ").split() if len(term) > 2
+        }
+        matched_terms = sorted(query_terms & category_terms)
+        score = len(matched_terms)
+        ranked_companies.append((score, matched_terms, company))
+
+    ranked_companies.sort(key=lambda item: (-item[0], item[2]["name"]))
+    visible_companies = ranked_companies[:6]
+    applied_filters = sum(bool(value and value not in ("all", "Any time", "All Types"))
+                          for value in (location, experience, date_posted, job_type))
+    if job_query:
+        st.success(f"{len(visible_companies)} employer searches ready · {applied_filters} additional filter(s) applied")
+
+    columns = st.columns(3)
+    for column, (score, matched_terms, company) in zip(columns * 2, visible_companies):
+        smart_url = build_smart_career_url(
+            company["name"], job_query, location, experience, date_posted, job_type
+        )
+        signal = "Strong role fit" if score >= 2 else "Relevant employer" if score == 1 else "Explore employer"
+        match_text = ", ".join(matched_terms) if matched_terms else "Broad technology hiring"
+        with column:
+            st.markdown(f"""
+                <div class="radar-card">
+                    <h3><i class="{company['icon']}" style="color:{company['color']}"></i>
+                    &nbsp;{company['name']}</h3>
+                    <p class="radar-signal">{signal}</p>
+                    <p class="radar-meta">{company['description']}</p>
+                    <p class="radar-meta"><strong>Why it appears:</strong> {match_text}</p>
+                </div>
+            """, unsafe_allow_html=True)
+            st.link_button(f"Open {company['name']} search ↗", smart_url, use_container_width=True)
 
 def render_market_insights():
     """Render job market insights section"""
@@ -342,6 +307,8 @@ def render_job_search():
             st.session_state.js_date_posted = "Any time"
         if "js_job_type" not in st.session_state:
             st.session_state.js_job_type = "All Types"
+        if "js_results" not in st.session_state:
+            st.session_state.js_results = []
 
         # Search inputs
         col1, col2 = st.columns([2, 1])
@@ -421,6 +388,7 @@ def render_job_search():
                     format_func=lambda x: x["text"],
                     key="js_salary_select"
                 )
+                st.caption("Salary is a planning preference; portal links use the filters supported by each job board.")
             with filter_cols[3]:
                 jtype_options = ["All Types", "Full Time", "Part Time", "Contract", "Remote"]
                 jtype_idx = jtype_options.index(st.session_state.js_job_type) \
@@ -451,29 +419,33 @@ def render_job_search():
                     date_posted=date_posted,
                     job_type=job_type,
                 )
-
-                if results:
-                    st.markdown("### 🎯 Job Search Results")
-                    for result in results:
-                        with st.container():
-                            st.markdown(f"""
-                            <div style='padding: 10px; margin: 5px 0; border-radius: 5px; background: rgba(255,255,255,0.05);'>
-                                <h4>
-                                    <i class='{result["icon"]}' style='color: {result["color"]}'></i>
-                                    {result["portal"]}
-                                </h4>
-                                <p>{result["title"]}</p>
-                                <a href='{result["url"]}' target='_blank' style='color: #00bfa5;'>
-                                    View Jobs on {result["portal"]} →
-                                </a>
-                            </div>
-                            """, unsafe_allow_html=True)
-                else:
-                    st.warning("No results found. Try different search terms or filters.")
+                st.session_state.js_results = results
             else:
+                st.session_state.js_results = []
                 st.warning("Please enter a job title or skills to search.")
 
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # URL generation is local; these links open the live job boards in a new tab.
+    search_results = st.session_state.get("js_results", [])
+    if search_results:
+        st.markdown("### 🎯 Search Launch Center")
+        st.caption(
+            f"{len(search_results)} job-board searches generated successfully. "
+            "The live listings load on the selected portal after you open a link."
+        )
+        result_columns = st.columns(3)
+        for column, result in zip(result_columns * 2, search_results):
+            with column:
+                st.markdown(f"""
+                    <div class="radar-card" style="min-height:125px;">
+                        <h3><i class="{result['icon']}" style="color:{result['color']}"></i>
+                        &nbsp;{result['portal']}</h3>
+                        <p class="radar-meta">{result['title']}</p>
+                        <p class="radar-signal">Portal URL ready · filters applied where supported</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                st.link_button(f"Open {result['portal']} ↗", result["url"], use_container_width=True)
 
     # ── Company cards always use persisted session_state values ────────────
     render_company_section(
